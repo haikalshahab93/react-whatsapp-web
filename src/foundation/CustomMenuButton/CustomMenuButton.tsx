@@ -1,12 +1,13 @@
 import { Box, IconButton, Menu, MenuItem } from "@mui/material";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
-import { useState } from "react";
+import React, { useState } from "react";
 
 interface CustomMenuButtonProps {
   menuItems: string[];
+  onSelect?: (label: string) => void;
 }
 
-export default function CustomMenuButton({ menuItems }: CustomMenuButtonProps) {
+export default function CustomMenuButton({ menuItems, onSelect }: CustomMenuButtonProps) {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
 
@@ -33,8 +34,18 @@ export default function CustomMenuButton({ menuItems }: CustomMenuButtonProps) {
           "aria-labelledby": "basic-button",
         }}
       >
-        {menuItems.map((item: string) => {
-          return <MenuItem onClick={handleClose}>{item}</MenuItem>;
+        {menuItems.map((item: string, index: number) => {
+          return (
+            <MenuItem
+              key={index}
+              onClick={() => {
+                handleClose();
+                onSelect?.(item);
+              }}
+            >
+              {item}
+            </MenuItem>
+          );
         })}
       </Menu>
     </Box>

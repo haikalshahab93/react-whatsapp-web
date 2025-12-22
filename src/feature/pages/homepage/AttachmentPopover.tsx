@@ -118,6 +118,7 @@ const AttachmentPopover = () => {
         <Box display="flex" flexDirection="column" gap="1.2rem">
           {options.map((item) => (
             <Avatar
+              key={item.id}
               sx={{
                 background: item.backgroundColor,
                 height: "3.8rem",

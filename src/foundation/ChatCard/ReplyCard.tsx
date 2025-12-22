@@ -3,16 +3,16 @@ import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
 import { colors } from "../../theme";
 
-const ReplyMessageCard = () => {
+const ReplyMessageCard = ({ text, time, name }: { text: string; time?: string; name?: string }) => {
   return (
     <Paper
       sx={{
         background: colors.black1,
         display: "flex",
-        alignSelf: "flex-start",
-        maxWidth: "60%",
+        alignSelf: "flex-end",
+        maxWidth: { xs: "75%", sm: "60%" },
         textAlign: "start",
-        padding: ".35rem .8rem",
+        padding: { xs: ".5rem .8rem", sm: ".35rem .8rem" },
         flexDirection: "column",
         borderRadius: ".625rem",
         position: "relative",
@@ -22,30 +22,34 @@ const ReplyMessageCard = () => {
           border: "20px solid transparent",
           position: "absolute",
           top: 0,
-          left: "-1.25rem",
-          borderTopLeftRadius: ".5rem",
+          right: "-1.25rem",
+          borderTopRightRadius: ".5rem",
           borderTopColor: colors.black1,
         },
       }}
     >
+      {name ? (
+        <Typography color={colors.grey1} sx={{ fontSize: { xs: ".7rem", sm: ".75rem" }, mb: 0.25 }}>
+          {name}
+        </Typography>
+      ) : null}
       <Typography
         color={colors.white1}
         sx={{
-          fontSize: "1rem",
+          fontSize: { xs: "0.95rem", sm: "1rem" },
         }}
       >
-        Card Nulla enim ut pari atur magna. OwnMessa geCard Nulla enim ut OwnM
-        es sageCard Nulla enim ut pariatur sit consectetur magna.
+        {text}
       </Typography>
       <Typography
         color={colors.grey1}
         sx={{
-          fontSize: ".85rem",
+          fontSize: { xs: ".75rem", sm: ".85rem" },
           display: "flex",
           alignSelf: "flex-end",
         }}
       >
-        4:59
+        {time ?? ''}
       </Typography>
     </Paper>
   );
