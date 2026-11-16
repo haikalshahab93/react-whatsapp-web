@@ -12,6 +12,18 @@ Express/Mongoose API). No framework migration was performed and no existing data
 > it, which is the only way to keep existing accounts and their password hashes working. See
 > [`AUDIT.md`](./AUDIT.md) for the full audit.
 
+## Screenshots
+
+| Chats, light | Chats, dark |
+| --- | --- |
+| ![Chat list and conversation in light mode](docs/screenshots/chat-light.png) | ![Chat list and conversation in dark mode](docs/screenshots/chats-dark.png) |
+
+| Discover | Friends |
+| --- | --- |
+| ![Nearby discovery cards with filters and swipe actions](docs/screenshots/discover-light.png) | ![Friend requests with accept and decline](docs/screenshots/friends-light.png) |
+
+Screenshots come from the demo data created by `npm run seed:demo`.
+
 ## Features
 
 **Authentication** — email/password registration, email verification (with a dev fallback when SMTP
@@ -54,7 +66,44 @@ server/                  Express 4 + Mongoose 7 + Socket.IO 4
   routes/                auth, users, chats, messages, friends, discovery, notifications, uploads
   middleware/            JWT auth, in-memory rate limiting
   utils/                 validation, geo, presence, notifications, chat service
+  scripts/               dev-mongo (in-memory database) and seed-demo (demo data)
+docs/screenshots/        README images
 ```
+
+## API and realtime surface
+
+All REST routes live under `/api` and require `Authorization: Bearer <token>` except the auth
+endpoints. Media is read from `/api/media/:id` (it also accepts `?token=` because an `<img>` tag
+cannot send headers) and is only served to members of the chat that owns the file.
+
+| Router | Endpoints |
+| --- | --- |
+| `/auth` | `POST /register`, `/verify`, `/resend`, `/login`, `/forgot`, `/reset`, `/otp/request`, `/otp/verify`, `GET /me` |
+| `/users` | `GET /me`, `PUT /me`, `GET /:id`, `GET /`, `GET /suggest`, `POST /invite` |
+| `/chats` | `POST /`, `GET /`, `GET /:id`, `PUT /:id`, `DELETE /:id`, `POST /:id/members`, `DELETE /:id/members/:userId`, `POST /:id/admins/:userId`, `GET /:id/messages`, `POST /:id/read` |
+| `/messages` | `POST /`, `GET /search`, `GET /:id`, `PUT /:id`, `DELETE /:id`, `POST /:id/reactions`, `POST /:id/read`, `POST /:id/delivered`, `POST /:id/forward` |
+| `/friends` | `GET /`, `/requests/received`, `/requests/sent`, `/status/:userId`, `/matches`, `/blocked`, `/likes/received`, `POST /request`, `/request/:id/accept`, `/request/:id/reject`, `/block/:userId`, `/report`, `DELETE /request/:id`, `/friend/:userId`, `/block/:userId` |
+| `/discovery` | `GET /`, `/preferences`, `/likes`, `PUT /preferences`, `POST /location`, `/like`, `/skip`, `DELETE /location`, `/swipe/:userId` |
+| `/notifications` | `GET /`, `PUT /read-all`, `PUT /:id/read`, `DELETE /:id` |
+| `/uploads` | `POST /` (multipart, 12 MB limit), `GET /:id` |
+
+Realtime runs on Socket.IO at the same origin; the handshake carries the JWT and every chat room join
+is checked against membership.
+
+| Client → server | Purpose |
+| --- | --- |
+| `chat:join` / `chat:leave` | Subscribe to a conversation's events |
+| `message:new` | Send a message; the server takes the sender from the token and replies with `message:ack` |
+| `message:read`, `typing`, `presence:ping` | Read receipts, typing indicator, presence heartbeat |
+| `call:invite`, `call:answer`, `call:ice`, `call:reject`, `call:end`, `call:busy` | WebRTC signalling relay |
+
+| Server → client | Purpose |
+| --- | --- |
+| `message:new`, `message:ack`, `chat:read` | Message delivery, send acknowledgement, read state |
+| `chat:created`, `chat:updated`, `chat:removed` | Chat list changes |
+| `notification:new` | Friend requests, accepts, group invites, reports |
+| `typing`, `presence:changed`, `presence:pong` | Typing and online state |
+| `call:incoming`, `call:ended`, `call:rejected`, `call:unavailable`, `call:error` | Call lifecycle |
 
 ## Running locally
 
@@ -108,6 +157,20 @@ npm run build          # outputs build/
 cd server && npm start # serves API + SPA on PORT
 ```
 
+## Testing
+
+```bash
+npx tsc --noEmit                                  # type check
+CI=true npx react-scripts test --watchAll=false   # unit tests
+npm run build                                     # production build
+```
+
+The repository ships one render smoke test. The API and Socket.IO paths were exercised during
+development with scripted request and socket suites (auth, chats, messages, friendship, discovery,
+notifications, uploads, plus live delivery, presence and typing); those scripts are not committed,
+so the backend currently has no test suite you can run from a clean checkout. Adding one is the
+highest-value next step for this project.
+
 ## Free-tier compatibility
 
 Everything implemented runs on free tiers: MongoDB Atlas M0 (or a local MongoDB) plus any static/Node
@@ -140,3 +203,21 @@ Known limitations to plan for:
 - Auth, invite, messaging and swipe endpoints are rate limited.
 - Blocking removes friendships and pending requests in both directions and hides both users from each
   other everywhere.
+
+## Troubleshooting
+
+**`/login` or `/chats` 404s in the browser.** In development the web app proxies everything that is
+not a static asset to the API, so a direct `curl` without `Accept: text/html` hits the API and gets a
+404 — that is expected. In production the API serves the SPA only when a `build/` directory exists
+next to `server/`, so run `npm run build` before `npm start`.
+
+**Realtime does not update until a refresh.** Check the socket connection in devtools: the client
+starts on HTTP long-polling and upgrades to WebSocket, so a proxy that blocks upgrades still works.
+If no `/socket.io` request is made at all, the API is unreachable — set `REACT_APP_PROXY_TARGET` if it
+is not on `http://localhost:5000`.
+
+**Calls ring but never connect.** There is no TURN relay; symmetric NATs and some mobile carriers
+cannot establish a peer connection. Configure TURN (see Free-tier compatibility) to fix it.
+
+**Verification or reset emails never arrive.** Without SMTP the API returns the token in the
+response and the UI shows it; wire the `SMTP_*` keys to send real mail.
