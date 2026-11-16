@@ -7,7 +7,9 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "dev:mongo": "node server/scripts/dev-mongo.js",
+    "seed:demo": "node server/scripts/seed-demo.js"
   },
   "dependencies": {
     "@emotion/react": "^11.10.4",

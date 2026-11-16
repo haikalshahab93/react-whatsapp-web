@@ -1,12 +1,26 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const User = require('../models/User');
 const Chat = require('../models/Chat');
+const { authMiddleware, signToken } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimit');
+const {
+  cleanString,
+  cleanStringArray,
+  isEmail,
+  parseDate,
+  slugifyUsername,
+} = require('../utils/validation');
 
 const router = express.Router();
+
+const authLimiter = rateLimit({ windowMs: 10 * 60_000, max: 40, keyPrefix: 'auth' });
+
+function smtpConfigured() {
+  return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+}
 
 function createTransport() {
   const host = process.env.SMTP_HOST;
@@ -14,21 +28,53 @@ function createTransport() {
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   if (!host || !user || !pass) {
-    console.warn('SMTP is not configured. Verification emails will not be sent.');
+    console.warn('SMTP is not configured. Emails will not be sent.');
     return null;
   }
   return nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
 }
 
+function appOrigin() {
+  return process.env.APP_ORIGIN || 'http://localhost:3000';
+}
+
+function emailShell(title, paragraphs) {
+  return `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#12211c">
+    <h2 style="margin:0 0 12px">${title}</h2>
+    ${paragraphs.join('')}
+    <p style="color:#6b7f78;font-size:12px;margin-top:28px">ChatEasy — private messaging &amp; nearby friends.</p>
+  </div>`;
+}
+
 function sendVerificationEmail(to, token) {
   const transport = createTransport();
-  const origin = process.env.APP_ORIGIN || 'http://localhost:3001';
-  const verifyUrl = `${origin}/verify?token=${token}`;
+  const verifyUrl = `${appOrigin()}/verify?token=${token}`;
   const mail = {
     from: process.env.SMTP_FROM || 'noreply@chateasy.local',
     to,
     subject: 'ChatEasy - Verify your email',
-    html: `<p>Hi, please verify your email to activate your ChatEasy account.</p><p><a href="${verifyUrl}">Verify Email</a></p>`,
+    html: emailShell('Verify your email', [
+      `<p>Welcome to ChatEasy. Confirm your email address to activate your account.</p>`,
+      `<p><a href="${verifyUrl}" style="display:inline-block;background:#0f9d76;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Verify email</a></p>`,
+      `<p style="color:#6b7f78;font-size:12px">Or paste this link: ${verifyUrl}</p>`,
+    ]),
+  };
+  if (!transport) return Promise.resolve();
+  return transport.sendMail(mail);
+}
+
+function sendResetEmail(to, token) {
+  const transport = createTransport();
+  const resetUrl = `${appOrigin()}/reset-password?token=${token}`;
+  const mail = {
+    from: process.env.SMTP_FROM || 'noreply@chateasy.local',
+    to,
+    subject: 'ChatEasy - Reset your password',
+    html: emailShell('Reset your password', [
+      `<p>We received a request to reset your ChatEasy password. This link expires in 60 minutes.</p>`,
+      `<p><a href="${resetUrl}" style="display:inline-block;background:#0f9d76;color:#fff;padding:10px 18px;border-radius:10px;text-decoration:none">Choose a new password</a></p>`,
+      `<p style="color:#6b7f78;font-size:12px">If you did not request this, you can ignore this email.</p>`,
+    ]),
   };
   if (!transport) return Promise.resolve();
   return transport.sendMail(mail);
@@ -37,7 +83,7 @@ function sendVerificationEmail(to, token) {
 function sendWhatsAppMessage(phone, text) {
   const sid = process.env.TWILIO_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_WHATSAPP_FROM; // e.g., '+14155238886'
+  const from = process.env.TWILIO_WHATSAPP_FROM;
   if (!sid || !token || !from) {
     console.warn('Twilio WhatsApp is not configured. OTP will not be sent.');
     return Promise.resolve();
@@ -55,38 +101,115 @@ function sendWhatsAppMessage(phone, text) {
 }
 
 function generateOTP() {
-  // 6-digit numeric
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-// helper to escape regex special chars
-function escapeRegex(str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** True when the API can hand the verification token back to the client (no SMTP). */
+function canExposeToken() {
+  return !smtpConfigured();
 }
 
-router.post('/register', async (req, res) => {
+async function uniqueUsername(name) {
+  const base = slugifyUsername(name);
+  for (let i = 0; i < 25; i += 1) {
+    const candidate = i === 0 ? base : `${base}${i}`;
+    const taken = await User.exists({ username: candidate });
+    if (!taken) return candidate;
+  }
+  return `${base}${Date.now().toString().slice(-5)}`;
+}
+
+/** Shared by email verification and OTP verification (existing behaviour, preserved). */
+async function completeVerification(user, io) {
+  user.verified = true;
+  user.verificationToken = undefined;
+  user.verificationTokenExpires = undefined;
+  user.otpHash = undefined;
+  user.otpExpires = undefined;
+  user.otpChannel = undefined;
+
+  const inviterId = user.invitedBy ? String(user.invitedBy) : '';
+  let createdChat = null;
+  if (inviterId) {
+    const inviter = await User.findById(inviterId);
+    if (inviter) {
+      const existing = await Chat.findOne({
+        isGroup: false,
+        members: { $all: [user._id, inviter._id] },
+      });
+      if (!existing) {
+        createdChat = await Chat.create({
+          name: `${inviter.name || 'User'} & ${user.name || 'User'}`,
+          isGroup: false,
+          members: [inviter._id, user._id],
+          directKey: Chat.directKeyFor(inviter._id, user._id),
+          createdBy: inviter._id,
+        });
+      }
+    }
+    user.invitedBy = undefined;
+  }
+
+  await user.save();
+
+  if (io && createdChat) {
+    for (const uid of createdChat.members || []) {
+      io.to(`user:${uid}`).emit('chat:created', createdChat);
+    }
+  }
+  return createdChat;
+}
+
+router.post('/register', authLimiter, async (req, res) => {
   try {
-    const { name, email, password, phone, inviter } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ message: 'Missing fields' });
-    const emailNorm = String(email).trim().toLowerCase();
-    const existing = await User.findOne({ email: emailNorm });
-    if (existing) return res.status(409).json({ message: 'Email already registered' });
+    const rawName = cleanString(req.body?.name, 80);
+    const rawEmail = cleanString(req.body?.email, 254).toLowerCase();
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const { phone, inviter } = req.body || {};
+
+    if (!rawName || !rawEmail || !password) {
+      return res.status(400).json({ message: 'Name, email and password are required' });
+    }
+    if (!isEmail(rawEmail)) return res.status(400).json({ message: 'Enter a valid email address' });
+    if (password.length < 8) return res.status(400).json({ message: 'Password must be at least 8 characters' });
+
+    const existing = await User.findOne({ email: rawEmail });
+    if (existing) return res.status(409).json({ message: 'This email is already registered' });
+
     const passwordHash = await bcrypt.hash(password, 10);
     const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 1000 * 60 * 60 * 24); // 24h
-    const doc = { name, email: emailNorm, passwordHash, verificationToken: token, verificationTokenExpires: expires };
-    if (typeof phone === 'string' && phone.trim().length > 0) {
-      doc.phone = phone.trim();
-    }
+    const expires = new Date(Date.now() + 1000 * 60 * 60 * 24);
+
+    const birthdate = parseDate(req.body?.birthdate);
+    const gender = ['male', 'female', 'other', 'prefer_not_to_say'].includes(req.body?.gender)
+      ? req.body.gender
+      : undefined;
+
+    const doc = {
+      name: rawName,
+      email: rawEmail,
+      passwordHash,
+      verificationToken: token,
+      verificationTokenExpires: expires,
+      username: await uniqueUsername(rawName),
+      bio: cleanString(req.body?.bio, 300),
+      interests: cleanStringArray(req.body?.interests),
+      ...(birthdate ? { birthdate } : {}),
+      ...(gender ? { gender } : {}),
+    };
+
+    if (typeof phone === 'string' && phone.trim().length > 0) doc.phone = cleanString(phone, 32);
     if (typeof inviter === 'string' && inviter.trim().length > 0) {
-      try { doc.invitedBy = inviter.trim(); } catch {}
+      try {
+        doc.invitedBy = inviter.trim();
+      } catch {}
     }
+
     const user = await User.create(doc);
-    await sendVerificationEmail(emailNorm, token).catch(() => {});
-    const includeToken = process.env.NODE_ENV !== 'production' || (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS);
-    const response = includeToken
-      ? { message: 'Registered. Check your email to verify.', userId: user._id, verificationToken: token }
-      : { message: 'Registered. Check your email to verify.', userId: user._id };
+    await sendVerificationEmail(rawEmail, token).catch(() => {});
+
+    const response = { message: 'Registered. Check your email to verify.', userId: user._id };
+    if (canExposeToken()) response.verificationToken = token;
     res.status(201).json(response);
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -94,24 +217,20 @@ router.post('/register', async (req, res) => {
 });
 
 // Resend verification email
-router.post('/resend', async (req, res) => {
+router.post('/resend', authLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = cleanString(req.body?.email, 254).toLowerCase();
     if (!email) return res.status(400).json({ message: 'Missing email' });
-    const emailNorm = String(email).trim().toLowerCase();
-    const user = await User.findOne({ email: emailNorm });
+    const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (user.verified) return res.status(400).json({ message: 'Already verified' });
     const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 1000 * 60 * 60 * 24);
     user.verificationToken = token;
-    user.verificationTokenExpires = expires;
+    user.verificationTokenExpires = new Date(Date.now() + 1000 * 60 * 60 * 24);
     await user.save();
-    await sendVerificationEmail(emailNorm, token).catch(() => {});
-    const includeToken = process.env.NODE_ENV !== 'production' || (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS);
-    const response = includeToken
-      ? { message: 'Verification email resent', verificationToken: token }
-      : { message: 'Verification email resent' };
+    await sendVerificationEmail(email, token).catch(() => {});
+    const response = { message: 'Verification email resent' };
+    if (canExposeToken()) response.verificationToken = token;
     res.json(response);
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -119,63 +238,54 @@ router.post('/resend', async (req, res) => {
 });
 
 // Verify email with token
-router.post('/verify', async (req, res) => {
+router.post('/verify', authLimiter, async (req, res) => {
   try {
-    const { token } = req.body;
+    const token = cleanString(req.body?.token, 200);
     if (!token) return res.status(400).json({ message: 'Missing token' });
     const user = await User.findOne({ verificationToken: token });
-    if (!user) return res.status(400).json({ message: 'Invalid token' });
+    if (!user) return res.status(400).json({ message: 'Invalid or already used token' });
     if (user.verificationTokenExpires && user.verificationTokenExpires.getTime() < Date.now()) {
       return res.status(400).json({ message: 'Token expired' });
     }
 
-    user.verified = true;
-    user.verificationToken = undefined;
-    user.verificationTokenExpires = undefined;
-
-    // Capture inviter before clearing
-    const inviterId = user.invitedBy ? String(user.invitedBy) : '';
-    let createdChat = null;
-    if (inviterId) {
-      const inviter = await User.findById(inviterId);
-      if (inviter) {
-        const existing = await Chat.findOne({ isGroup: false, members: { $all: [user._id, inviter._id] } });
-        if (!existing) {
-          createdChat = await Chat.create({
-            name: `${inviter.name || 'User'} & ${user.name || 'User'}`,
-            isGroup: false,
-            members: [inviter._id, user._id],
-          });
-        }
-      }
-      user.invitedBy = undefined;
-    }
-
-    await user.save();
-
-    // Emit event to inviter and the new user to refresh chat list
-    const io = req.app.get('io');
-    if (io && createdChat) {
-      io.to(`user:${user._id}`).emit('chat:created', createdChat);
-      if (createdChat.members && createdChat.members.length) {
-        createdChat.members.forEach((uid) => {
-          io.to(`user:${uid}`).emit('chat:created', createdChat);
-        });
-      }
-    }
-
-    res.json({ message: 'Email verified', user });
+    await completeVerification(user, req.app.get('io'));
+    res.json({ message: 'Email verified', user: user.toSelf() });
   } catch (e) {
     console.error('verify error', e);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.post('/otp/verify', async (req, res) => {
+router.post('/otp/request', authLimiter, async (req, res) => {
   try {
-    const { phone, otp } = req.body;
+    const phone = cleanString(req.body?.phone, 32);
+    if (!phone) return res.status(400).json({ message: 'Missing phone' });
+    const user = await User.findOne({ phone });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.verified) return res.status(400).json({ message: 'Already verified' });
+    const otp = generateOTP();
+    user.otpHash = await bcrypt.hash(otp, 10);
+    user.otpExpires = new Date(Date.now() + 1000 * 60 * 10);
+    user.otpChannel = 'wa';
+    await user.save();
+    const configured = !!(process.env.TWILIO_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_WHATSAPP_FROM);
+    await sendWhatsAppMessage(phone, `Kode verifikasi ChatEasy: ${otp}`).catch(() => {});
+    res.json(
+      configured
+        ? { message: 'OTP sent via WhatsApp' }
+        : { message: 'WhatsApp is not configured on this server, so the code is shown here.', otp }
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+});
+
+router.post('/otp/verify', authLimiter, async (req, res) => {
+  try {
+    const phone = cleanString(req.body?.phone, 32);
+    const otp = cleanString(req.body?.otp, 10);
     if (!phone || !otp) return res.status(400).json({ message: 'Missing phone or otp' });
-    const user = await User.findOne({ phone: String(phone).trim() });
+    const user = await User.findOne({ phone });
     if (!user) return res.status(404).json({ message: 'User not found' });
     if (!user.otpExpires || user.otpExpires.getTime() < Date.now()) {
       return res.status(400).json({ message: 'OTP expired' });
@@ -183,61 +293,95 @@ router.post('/otp/verify', async (req, res) => {
     const ok = user.otpHash && (await bcrypt.compare(otp, user.otpHash));
     if (!ok) return res.status(400).json({ message: 'Invalid OTP' });
 
-    user.verified = true;
-    user.otpHash = undefined;
-    user.otpExpires = undefined;
-    user.otpChannel = undefined;
-    user.verificationToken = undefined;
-    user.verificationTokenExpires = undefined;
-
-    const inviterId = user.invitedBy ? String(user.invitedBy) : '';
-    let createdChat = null;
-    if (inviterId) {
-      const inviter = await User.findById(inviterId);
-      if (inviter) {
-        const existing = await Chat.findOne({ isGroup: false, members: { $all: [user._id, inviter._id] } });
-        if (!existing) {
-          createdChat = await Chat.create({
-            name: `${inviter.name || 'User'} & ${user.name || 'User'}`,
-            isGroup: false,
-            members: [inviter._id, user._id],
-          });
-        }
-      }
-      user.invitedBy = undefined;
-    }
-
-    await user.save();
-
-    const io = req.app.get('io');
-    if (io && createdChat) {
-      if (createdChat.members && createdChat.members.length) {
-        createdChat.members.forEach((uid) => {
-          io.to(`user:${uid}`).emit('chat:created', createdChat);
-        });
-      }
-    }
-
-    res.json({ message: 'Phone verified', user });
+    await completeVerification(user, req.app.get('io'));
+    res.json({ message: 'Phone verified', user: user.toSelf() });
   } catch (e) {
     console.error('otp verify error', e);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = cleanString(req.body?.email, 254).toLowerCase();
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!email || !password) return res.status(400).json({ message: 'Missing email or password' });
-    const rawEmail = String(email).trim();
-    const emailQuery = new RegExp(`^${escapeRegex(rawEmail)}$`, 'i');
-    const user = await User.findOne({ email: emailQuery });
+
+    const user = await User.findOne({ email });
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
-    if (!user.verified) return res.status(403).json({ message: 'Please verify your email' });
-    const token = jwt.sign({ id: user._id.toString(), email: user.email }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '7d' });
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email, phone: user.phone || null } });
+    if (user.disabled) return res.status(403).json({ message: 'This account has been disabled' });
+    if (!user.verified) {
+      return res.status(403).json({ message: 'Please verify your email before signing in', code: 'unverified' });
+    }
+
+    user.lastActiveAt = new Date();
+    await user.save();
+
+    res.json({ token: signToken(user), user: user.toSelf() });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+});
+
+router.post('/forgot', authLimiter, async (req, res) => {
+  try {
+    const email = cleanString(req.body?.email, 254).toLowerCase();
+    if (!isEmail(email)) return res.status(400).json({ message: 'Enter a valid email address' });
+    const user = await User.findOne({ email });
+
+    // Always answer the same way so the endpoint cannot be used to probe accounts.
+    const response = { message: 'If that email is registered, a reset link is on its way.' };
+    if (!user) return res.json(response);
+
+    const token = crypto.randomBytes(32).toString('hex');
+    user.resetToken = token;
+    user.resetTokenExpires = new Date(Date.now() + 1000 * 60 * 60);
+    await user.save();
+    await sendResetEmail(email, token).catch(() => {});
+    if (canExposeToken()) response.resetToken = token;
+    res.json(response);
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+});
+
+router.post('/reset', authLimiter, async (req, res) => {
+  try {
+    const token = cleanString(req.body?.token, 200);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!token) return res.status(400).json({ message: 'Missing token' });
+    if (password.length < 8) return res.status(400).json({ message: 'Password must be at least 8 characters' });
+
+    const user = await User.findOne({ resetToken: token });
+    if (!user) return res.status(400).json({ message: 'Invalid or already used reset link' });
+    if (!user.resetTokenExpires || user.resetTokenExpires.getTime() < Date.now()) {
+      return res.status(400).json({ message: 'Reset link expired' });
+    }
+
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.resetToken = undefined;
+    user.resetTokenExpires = undefined;
+    // A password reset also proves email ownership.
+    user.verified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpires = undefined;
+    await user.save();
+
+    res.json({ message: 'Password updated. You can sign in now.' });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+});
+
+/** Current session user — the frontend uses this to hydrate auth state on load. */
+router.get('/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(401).json({ message: 'Session no longer valid' });
+    if (user.disabled) return res.status(403).json({ message: 'This account has been disabled' });
+    res.json(user.toSelf());
   } catch (e) {
     res.status(400).json({ message: e.message });
   }

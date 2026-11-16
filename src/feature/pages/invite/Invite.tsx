@@ -1,185 +1,256 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Typography, TextField, Button, Alert, List, ListItem, ListItemAvatar, Avatar, ListItemText, IconButton } from '@mui/material';
-import SendIcon from '@mui/icons-material/Send';
+import React from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CircularProgress,
+  Divider,
+  IconButton,
+  InputAdornment,
+  List,
+  ListItem,
+  ListItemAvatar,
+  ListItemText,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import SendIcon from "@mui/icons-material/Send";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import MailOutlineIcon from "@mui/icons-material/MailOutline";
+import WhatsAppIcon from "@mui/icons-material/WhatsApp";
+import PersonAddAltIcon from "@mui/icons-material/PersonAddAlt";
+import UserAvatar from "../../../components/Avatar";
+import EmptyState from "../../../components/EmptyState";
+import { useAuth } from "../../../context/AuthContext";
+import { useToast } from "../../../context/ToastContext";
+import { ApiError, api } from "../../../lib/api";
+import type { User } from "../../../lib/types";
 
-const API_BASE = (typeof process !== 'undefined' && (process as any).env && (process as any).env.REACT_APP_API_BASE) || '/api';
-
-interface SuggestUser {
-  _id: string;
-  name: string;
-  email?: string;
-  phone?: string;
-  avatarUrl?: string;
+interface InviteResponse {
+  message: string;
+  registerUrl?: string;
+  delivered?: { email: boolean; whatsapp: boolean };
 }
 
 export default function Invite() {
-  const [suggestions, setSuggestions] = useState<SuggestUser[]>([]);
-  const [loadingSuggest, setLoadingSuggest] = useState(false);
-  const [errorSuggest, setErrorSuggest] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
+  const { user } = useAuth();
+  const toast = useToast();
+  const [suggestions, setSuggestions] = React.useState<User[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [query, setQuery] = React.useState("");
 
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [invitePhone, setInvitePhone] = useState('');
-  const [inviteMessage, setInviteMessage] = useState('');
-  const [inviteLoading, setInviteLoading] = useState(false);
-  const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
-  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [email, setEmail] = React.useState("");
+  const [phone, setPhone] = React.useState("");
+  const [message, setMessage] = React.useState("");
+  const [sending, setSending] = React.useState(false);
+  const [lastResult, setLastResult] = React.useState<InviteResponse | null>(null);
 
-  const token = useMemo(() => localStorage.getItem('chateasy_token'), []);
+  const inviteLink = React.useMemo(() => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const id = user?._id || user?.id || "";
+    return id ? `${origin}/register?inviter=${encodeURIComponent(id)}` : `${origin}/register`;
+  }, [user]);
 
-  async function parseJSONSafe(res: Response) {
-    const ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/json')) return res.json();
-    const text = await res.text();
-    try { return JSON.parse(text); } catch { return { message: text }; }
-  }
+  React.useEffect(() => {
+    setLoading(true);
+    api<User[]>("/users/suggest", { query: { limit: 12 } })
+      .then((data) => setSuggestions(data || []))
+      .catch((e) => toast.error((e as ApiError).message || "Could not load suggestions."))
+      .finally(() => setLoading(false));
+  }, [toast]);
 
-  async function fetchSuggestions(search?: string) {
-    setLoadingSuggest(true);
-    setErrorSuggest(null);
+  async function sendInvite(target: { email?: string; phone?: string }) {
+    if (!target.email && !target.phone) {
+      toast.error("Enter an email address or phone number.");
+      return;
+    }
+    setSending(true);
+    setLastResult(null);
     try {
-      const url = new URL(`${API_BASE}/users/suggest`, window.location.origin);
-      if (search && search.trim().length > 0) {
-        url.searchParams.set('q', search.trim());
-      }
-      const res = await fetch(url.toString().replace(window.location.origin, ''), {
-        headers: { Authorization: `Bearer ${token || ''}` },
+      const result = await api<InviteResponse>("/users/invite", {
+        method: "POST",
+        body: { email: target.email, phone: target.phone, message },
       });
-      const data = await parseJSONSafe(res);
-      if (!res.ok) throw new Error((data && data.message) || 'Gagal mengambil saran undangan');
-      setSuggestions(Array.isArray(data) ? data : []);
-    } catch (err: any) {
-      setErrorSuggest(err.message || 'Terjadi kesalahan saat memuat saran');
-      setSuggestions([]);
+      setLastResult(result);
+      if (result.delivered?.email || result.delivered?.whatsapp) {
+        toast.success("Invitation sent");
+        setEmail("");
+        setPhone("");
+      } else {
+        toast.info("Sharing channels are not configured — copy the invite link instead.");
+      }
+    } catch (e) {
+      toast.error((e as ApiError).message || "Could not send the invitation.");
     } finally {
-      setLoadingSuggest(false);
+      setSending(false);
     }
   }
 
-  useEffect(() => {
-    fetchSuggestions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function sendInvite(email?: string, phone?: string) {
-    setInviteLoading(true);
-    setInviteError(null);
-    setInviteSuccess(null);
+  async function copyLink() {
     try {
-      const body: any = { message: inviteMessage || '' };
-      if (email) body.email = email;
-      if (phone) body.phone = phone;
-      if (!body.email && !body.phone) throw new Error('Isi email atau nomor WhatsApp terlebih dahulu');
-      const res = await fetch(`${API_BASE}/users/invite`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
-        body: JSON.stringify(body),
-      });
-      const data = await parseJSONSafe(res);
-      if (!res.ok) throw new Error((data && data.message) || 'Gagal mengirim undangan');
-      setInviteSuccess('Undangan berhasil dikirim');
-      setInviteEmail('');
-      setInvitePhone('');
-    } catch (err: any) {
-      setInviteError(err.message || 'Terjadi kesalahan saat mengirim undangan');
-    } finally {
-      setInviteLoading(false);
+      await navigator.clipboard.writeText(inviteLink);
+      toast.success("Invite link copied");
+    } catch {
+      toast.info(inviteLink);
     }
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: '#0b1419' }}>
-      <Box sx={{ bgcolor: '#1f2c33', p: 2 }}>
-        <Typography variant="h6" sx={{ color: '#e9edef', fontWeight: 600 }}>Undang Teman ke ChatEasy</Typography>
-        <Typography variant="body2" sx={{ color: '#8696a1' }}>
-          Saran undangan otomatis ditampilkan berdasarkan domain email atau prefix nomor WhatsApp Anda.
-        </Typography>
-      </Box>
+    <Box sx={{ height: "100%", overflowY: "auto", px: { xs: 2, sm: 3 }, py: 2.5 }}>
+      <Typography variant="h5">Invite friends</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        ChatEasy is better with the people you already talk to. Share your personal invite link.
+      </Typography>
 
-      <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, p: 2 }}>
-        <Box sx={{ flex: 1, bgcolor: '#101b20', p: 2, borderRadius: 1 }}>
-          <Typography variant="subtitle1" sx={{ color: '#e9edef', mb: 1, fontWeight: 600 }}>Saran Undangan</Typography>
-          <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+      <Card sx={{ p: 2.5, mb: 2 }}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ xs: "stretch", sm: "center" }}>
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+              Your invite link
+            </Typography>
             <TextField
-              placeholder="Cari nama, email, atau nomor"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              size="small"
+              value={inviteLink}
               fullWidth
-              InputProps={{ sx: { color: '#e9edef' } }}
+              size="small"
+              InputProps={{
+                readOnly: true,
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <Tooltip title="Copy link">
+                      <IconButton onClick={copyLink} edge="end" aria-label="Copy invite link">
+                        <ContentCopyIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </InputAdornment>
+                ),
+              }}
             />
-            <Button variant="contained" onClick={() => fetchSuggestions(query)} disabled={loadingSuggest}>
-              {loadingSuggest ? 'Memuat...' : 'Cari'}
-            </Button>
           </Box>
-          {errorSuggest && <Alert severity="error" sx={{ mb: 2 }}>{errorSuggest}</Alert>}
-          <List dense sx={{ bgcolor: '#0b1419', borderRadius: 1 }}>
-            {suggestions.map((u) => (
-              <ListItem key={u._id} secondaryAction={
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  {u.email && (
-                    <IconButton aria-label="Undang via Email" onClick={() => sendInvite(u.email, undefined)}>
-                      <SendIcon sx={{ color: '#25d366' }} />
-                    </IconButton>
-                  )}
-                  {u.phone && (
-                    <IconButton aria-label="Undang via WhatsApp" onClick={() => sendInvite(undefined, u.phone)}>
-                      <SendIcon sx={{ color: '#00a884' }} />
-                    </IconButton>
-                  )}
-                </Box>
-              }>
-                <ListItemAvatar>
-                  <Avatar src={u.avatarUrl} />
-                </ListItemAvatar>
-                <ListItemText
-                  primary={<Typography sx={{ color: '#e9edef' }}>{u.name}</Typography>}
-                  secondary={<Typography sx={{ color: '#8696a1' }}>{[u.email, u.phone].filter(Boolean).join(' • ')}</Typography>}
-                />
-              </ListItem>
-            ))}
-            {suggestions.length === 0 && !loadingSuggest && (
-              <Typography variant="body2" sx={{ color: '#8696a1', p: 1 }}>Tidak ada saran undangan.</Typography>
-            )}
-          </List>
-        </Box>
-
-        <Box sx={{ flex: 1, bgcolor: '#101b20', p: 2, borderRadius: 1 }}>
-          <Typography variant="subtitle1" sx={{ color: '#e9edef', mb: 1, fontWeight: 600 }}>Kirim Undangan Manual</Typography>
-          {inviteError && <Alert severity="error" sx={{ mb: 2 }}>{inviteError}</Alert>}
-          {inviteSuccess && <Alert severity="success" sx={{ mb: 2 }}>{inviteSuccess}</Alert>}
-          <TextField
-            label="Email (opsional)"
-            type="email"
-            value={inviteEmail}
-            onChange={(e) => setInviteEmail(e.target.value)}
-            fullWidth
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            label="Nomor WhatsApp (opsional)"
-            value={invitePhone}
-            onChange={(e) => setInvitePhone(e.target.value)}
-            fullWidth
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            label="Pesan (opsional)"
-            value={inviteMessage}
-            onChange={(e) => setInviteMessage(e.target.value)}
-            fullWidth
-            multiline
-            minRows={3}
-            sx={{ mb: 2 }}
-          />
-          <Button
-            variant="contained"
-            onClick={() => sendInvite(inviteEmail || undefined, invitePhone || undefined)}
-            disabled={inviteLoading}
-          >
-            {inviteLoading ? 'Mengirim...' : 'Kirim Undangan'}
+          <Button variant="contained" onClick={copyLink} startIcon={<ContentCopyIcon />}>
+            Copy link
           </Button>
-        </Box>
+        </Stack>
+      </Card>
+
+      {lastResult && !lastResult.delivered?.email && !lastResult.delivered?.whatsapp && (
+        <Alert severity="info" sx={{ mb: 2, borderRadius: 3 }}>
+          {lastResult.message}
+        </Alert>
+      )}
+
+      <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1.2fr 1fr" } }}>
+        <Card sx={{ p: 2.5 }}>
+          <Typography variant="h6" sx={{ mb: 0.5 }}>
+            People you may know
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Based on your email domain and phone prefix.
+          </Typography>
+          <TextField
+            placeholder="Search by name, email or phone"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            fullWidth
+            size="small"
+            sx={{ mb: 1.5 }}
+          />
+          {loading ? (
+            <Box sx={{ display: "grid", placeItems: "center", py: 4 }}>
+              <CircularProgress size={22} />
+            </Box>
+          ) : suggestions.length === 0 ? (
+            <EmptyState icon={PersonAddAltIcon} title="No suggestions yet" description="Share your link with a friend instead." compact />
+          ) : (
+            <List>
+              {suggestions
+                .filter((s) => {
+                  const term = query.trim().toLowerCase();
+                  if (!term) return true;
+                  return (
+                    s.name.toLowerCase().includes(term) ||
+                    (s.email || "").toLowerCase().includes(term) ||
+                    (s.phone || "").includes(term)
+                  );
+                })
+                .map((person) => (
+                  <ListItem
+                    key={person._id}
+                    secondaryAction={
+                      <Stack direction="row" spacing={0.5}>
+                        {person.email && (
+                          <Tooltip title="Invite by email">
+                            <IconButton
+                              onClick={() => sendInvite({ email: person.email })}
+                              disabled={sending}
+                              aria-label={`Invite ${person.name} by email`}
+                            >
+                              <MailOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                        {person.phone && (
+                          <Tooltip title="Invite via WhatsApp">
+                            <IconButton
+                              onClick={() => sendInvite({ phone: person.phone || undefined })}
+                              disabled={sending}
+                              aria-label={`Invite ${person.name} via WhatsApp`}
+                            >
+                              <WhatsAppIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        )}
+                      </Stack>
+                    }
+                  >
+                    <ListItemAvatar>
+                      <UserAvatar src={person.avatarUrl} name={person.name} size={38} />
+                    </ListItemAvatar>
+                    <ListItemText
+                      primary={person.name}
+                      secondary={[person.email, person.phone].filter(Boolean).join(" · ") || "No contact details"}
+                    />
+                  </ListItem>
+                ))}
+            </List>
+          )}
+        </Card>
+
+        <Card sx={{ p: 2.5 }}>
+          <Typography variant="h6" sx={{ mb: 0.5 }}>
+            Send a direct invitation
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Requires email (SMTP) or WhatsApp (Twilio) to be configured on the server.
+          </Typography>
+          <Stack spacing={2}>
+            <TextField label="Email (optional)" type="email" value={email} onChange={(e) => setEmail(e.target.value)} fullWidth />
+            <TextField label="WhatsApp number (optional)" value={phone} onChange={(e) => setPhone(e.target.value)} fullWidth />
+            <TextField
+              label="Personal message (optional)"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              fullWidth
+              multiline
+              minRows={3}
+              inputProps={{ maxLength: 300 }}
+            />
+            <Button
+              variant="contained"
+              startIcon={sending ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
+              onClick={() => sendInvite({ email: email || undefined, phone: phone || undefined })}
+              disabled={sending}
+            >
+              {sending ? "Sending…" : "Send invitation"}
+            </Button>
+            <Divider />
+            <Typography variant="caption" color="text.secondary">
+              Invitations never create an account for the other person. They receive a link and choose to register.
+            </Typography>
+          </Stack>
+        </Card>
       </Box>
     </Box>
   );

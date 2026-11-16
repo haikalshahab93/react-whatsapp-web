@@ -1,318 +1,420 @@
-import { Avatar, Box, IconButton, Input, Chip } from "@mui/material";
-import CustomAppBar from "../../../foundation/CustomAppBar/CustomAppBar";
-import CustomMenuButton from "../../../foundation/CustomMenuButton/CustomMenuButton";
-import { leftPanelMenuItem } from "./utils/constant";
-import ChatIcon from "@mui/icons-material/Chat";
-import DonutLargeIcon from "@mui/icons-material/DonutLarge";
-import ChatCard from "../../../foundation/ChatCard/ChatCard";
-import FilterListIcon from "@mui/icons-material/FilterList";
+import React from "react";
+import {
+  Box,
+  Button,
+  Chip,
+  Divider,
+  IconButton,
+  InputAdornment,
+  ListItemButton,
+  Skeleton,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
-import { ChatCardType } from "./utils/LeftPanel.types";
-import React, { useEffect, useState } from "react";
-import { io as socketIO } from "socket.io-client";
-import DBStatus from "../../../foundation/CustomAppBar/DBStatus";
-
-const API_BASE = (typeof process !== 'undefined' && (process as any).env && (process as any).env.REACT_APP_API_BASE) || '/api';
-const WS_BASE = (typeof window !== 'undefined' && (window as any).WS_BASE)
-  || (typeof window !== 'undefined' && window.location ? `${window.location.protocol}//${window.location.hostname}:5000` : 'http://localhost:5000');
+import PersonAddAltIcon from "@mui/icons-material/PersonAddAlt";
+import GroupAddOutlinedIcon from "@mui/icons-material/GroupAddOutlined";
+import PushPinIcon from "@mui/icons-material/PushPin";
+import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
+import { useNavigate } from "react-router-dom";
+import UserAvatar from "../../../components/Avatar";
+import EmptyState from "../../../components/EmptyState";
+import { ChatListSkeleton } from "../../../components/Skeletons";
+import GroupDialog from "./GroupDialog";
+import { useAuth } from "../../../context/AuthContext";
+import { useToast } from "../../../context/ToastContext";
+import { ApiError, api } from "../../../lib/api";
+import { getSocket } from "../../../lib/socket";
+import { formatListTime, messagePreview, senderId } from "../../../lib/format";
+import { chatDisplayName, chatPartner, presenceLabel } from "../../../lib/format";
+import type { Chat, User } from "../../../lib/types";
 
 interface LeftPanelProps {
-  onSelectChat?: (chat?: ChatCardType) => void;
+  onSelectChat?: (chat: Chat) => void;
+  selectedChatId?: string;
 }
 
-export default function LeftPanel({ onSelectChat }: LeftPanelProps) {
-  const [chats, setChats] = useState<ChatCardType[]>([]);
-  const [query, setQuery] = useState<string>("");
-  const [suggestions, setSuggestions] = useState<any[]>([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState<boolean>(false);
-  const [meId, setMeId] = useState<string | null>(null);
+type Tab = "all" | "unread" | "groups";
 
-  function getMeId(): string | null {
-    const userRaw = localStorage.getItem('chateasy_user');
-    return userRaw ? JSON.parse(userRaw).id : null;
-  }
+export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelProps) {
+  const { user } = useAuth();
+  const toast = useToast();
+  const navigate = useNavigate();
+  const meId = String(user?._id || user?.id || "");
 
-  function formatDirectName(c: any, me: string | null): string {
+  const [chats, setChats] = React.useState<Chat[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [tab, setTab] = React.useState<Tab>("all");
+  const [query, setQuery] = React.useState("");
+  const [results, setResults] = React.useState<User[]>([]);
+  const [searching, setSearching] = React.useState(false);
+  const [groupOpen, setGroupOpen] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setError(null);
     try {
-      if (c?.isGroup) return c?.name || '';
-      const members = Array.isArray(c?.members) ? c.members : [];
-      const meStr = String(me || '');
-      const other = members.find((m: any) => String(m?._id || m) !== meStr);
-      const otherName = other?.name || other?.email || other?.phone;
-      return otherName || c?.name || '';
-    } catch {
-      return c?.name || '';
+      const data = await api<Chat[]>("/chats");
+      setChats(data || []);
+    } catch (e) {
+      setError((e as ApiError).message || "Could not load your chats.");
+    } finally {
+      setLoading(false);
     }
-  }
-
-  function mapChats(data: any[], me: string | null): ChatCardType[] {
-    return (Array.isArray(data) ? data : []).map((c: any) => ({
-      id: c._id,
-      name: formatDirectName(c, me),
-      lastText: c?.lastMessage?.content || '',
-      lastSeen: c?.lastMessage?.createdAt ? new Date(c.lastMessage.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
-      selected: false,
-      unreadCount: 0,
-      pinned: !!c?.pinned,
-    }));
-  }
-
-  useEffect(() => {
-    const token = localStorage.getItem('chateasy_token');
-    const userId = getMeId();
-    setMeId(userId);
-    if (!token || !userId) { setChats([]); return; }
-    fetch(`${API_BASE}/chats?member=${userId}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-      .then((res) => res.json())
-      .then((data) => setChats(mapChats(Array.isArray(data) ? data : [], userId)))
-      .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    // Socket connection for realtime chat list updates
-    const token = localStorage.getItem('chateasy_token');
-    const userId = getMeId();
-    if (!token || !userId) return;
-    const s = socketIO(WS_BASE, { transports: ['websocket', 'polling'] });
-    s.emit('user:join', userId);
-    s.on('chat:created', (chat: any) => {
-      const currMe = meId || getMeId();
-      setChats((prev) => {
-        const exists = prev.some((c) => c.id === chat._id);
-        if (exists) return prev;
-        const mapped = mapChats([chat], currMe);
-        return [mapped[0], ...prev];
-      });
-    });
-    s.on('chat:updated', (chat: any) => {
-      const currMe = meId || getMeId();
-      setChats((prev) => {
-        const mapped = mapChats([chat], currMe)[0];
-        const others = prev.filter((c) => c.id !== chat._id);
-        return [mapped, ...others];
-      });
-    });
-    return () => { s.disconnect(); };
-  }, [meId]);
+  React.useEffect(() => {
+    void load();
+  }, [load]);
 
-  useEffect(() => {
-    // Fetch user suggestions based on query
-    const token = localStorage.getItem('chateasy_token');
-    const userId = getMeId();
-    if (!token || !userId) { setSuggestions([]); setSuggestionsLoading(false); return; }
-    const q = query.trim();
-    if (!q) { setSuggestions([]); setSuggestionsLoading(false); return; }
+  React.useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return undefined;
+
+    const upsert = (incoming: Chat) => {
+      setChats((prev) => {
+        const rest = prev.filter((c) => c._id !== incoming._id);
+        return [incoming, ...rest].sort(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        );
+      });
+    };
+
+    const onUpdated = (incoming: Chat) => {
+      if (!incoming || !incoming._id) return;
+      upsert(incoming);
+    };
+
+    const onRemoved = ({ chatId }: { chatId: string }) => {
+      setChats((prev) => prev.filter((c) => c._id !== chatId));
+    };
+
+    const onPresence = ({ userId, online }: { userId: string; online: boolean }) => {
+      setChats((prev) =>
+        prev.map((chat) => ({
+          ...chat,
+          members: chat.members.map((m) => (String(m._id) === String(userId) ? { ...m, online } : m)),
+        }))
+      );
+    };
+
+    const onRead = ({ chatId }: { chatId: string }) => {
+      setChats((prev) =>
+        prev.map((chat) => (String(chat._id) === String(chatId) ? { ...chat, unreadCount: 0 } : chat))
+      );
+    };
+
+    socket.on("chat:updated", onUpdated);
+    socket.on("chat:created", onUpdated);
+    socket.on("chat:removed", onRemoved);
+    socket.on("presence:changed", onPresence);
+    socket.on("chat:read", onRead);
+    return () => {
+      socket.off("chat:updated", onUpdated);
+      socket.off("chat:created", onUpdated);
+      socket.off("chat:removed", onRemoved);
+      socket.off("presence:changed", onPresence);
+      socket.off("chat:read", onRead);
+    };
+  }, []);
+
+  // Opening a conversation clears its badge immediately, before the server round-trip.
+  React.useEffect(() => {
+    if (!selectedChatId) return;
+    setChats((prev) =>
+      prev.map((chat) => (String(chat._id) === String(selectedChatId) ? { ...chat, unreadCount: 0 } : chat))
+    );
+  }, [selectedChatId]);
+
+  // Debounced people search
+  React.useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2) {
+      setResults([]);
+      setSearching(false);
+      return undefined;
+    }
     const controller = new AbortController();
-    setSuggestionsLoading(true);
-    fetch(`${API_BASE}/users/suggest?q=${encodeURIComponent(q)}&limit=10`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    })
-      .then((res) => res.json())
-      .then((data) => setSuggestions(Array.isArray(data) ? data : []))
-      .catch(() => {})
-      .finally(() => setSuggestionsLoading(false));
-    return () => controller.abort();
-  }, [query]);
+    setSearching(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const data = await api<User[]>("/users/suggest", {
+          query: { q: term, limit: 12 },
+          signal: controller.signal,
+        });
+        setResults((data || []).filter((u) => String(u._id) !== meId));
+      } catch (e) {
+        if ((e as Error).name !== "AbortError") setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 320);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [query, meId]);
 
-  const handleMenuSelect = (label: string) => {
-    if (label === 'Logout') {
-      localStorage.removeItem('chateasy_token');
-      localStorage.removeItem('chateasy_user');
-      window.location.href = '/login';
-      return;
-    }
-    if (label === 'Invite Friends') {
-      window.location.href = '/invite';
-      return;
-    }
-  };
-
-  async function startOrOpenChat(user: any) {
-    const token = localStorage.getItem('chateasy_token');
-    const meIdLocal = getMeId();
-    if (!token || !meIdLocal || !user || !user._id) return;
+  async function startChat(person: User) {
     try {
-      // Check existing chats containing the target user
-      const res = await fetch(`${API_BASE}/chats?member=${meIdLocal}`, { headers: { Authorization: `Bearer ${token}` } });
-      const list = await res.json();
-      const existing = (Array.isArray(list) ? list : []).find((c: any) => Array.isArray(c.members) && c.members.some((m: any) => String(m._id || m) === String(user._id)));
-      if (existing) {
-        const mapped = mapChats([existing], meIdLocal)[0];
-        onSelectChat?.(mapped);
-        setQuery("");
-        setSuggestions([]);
-        return;
-      }
-      // Create new chat
-      const createRes = await fetch(`${API_BASE}/chats`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: user.name || user.email || user.phone || 'New Chat', isGroup: false, members: [meIdLocal, user._id] }),
-      });
-      const chat = await createRes.json();
-      if (createRes.ok && chat?._id) {
-        // Fetch detail to get populated members for proper naming
-        const detailRes = await fetch(`${API_BASE}/chats/${chat._id}`, { headers: { Authorization: `Bearer ${token}` } });
-        const detail = await detailRes.json();
-        const mapped = mapChats([detail], meIdLocal)[0];
-        setChats((prev) => [mapped, ...prev]);
-        onSelectChat?.(mapped);
-      }
-    } catch (e) {
-      // silent fail
-    } finally {
+      const chat = await api<Chat>("/chats", { method: "POST", body: { members: [meId, person._id] } });
+      setChats((prev) => [chat, ...prev.filter((c) => c._id !== chat._id)]);
       setQuery("");
-      setSuggestions([]);
+      setResults([]);
+      onSelectChat?.(chat);
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.status === 403) {
+        toast.info("You need to be friends first. Sending a friend request…");
+        try {
+          await api("/friends/request", { method: "POST", body: { toUserId: person._id } });
+          toast.success(`Friend request sent to ${person.name}`);
+        } catch (reqErr) {
+          toast.error((reqErr as ApiError).message || "Could not send the friend request.");
+        }
+      } else {
+        toast.error(err.message || "Could not open that chat.");
+      }
     }
   }
 
-  return (
-    <Box height="100%" width="100%" overflow="hidden" display="flex" flexDirection="column">
-      <CustomAppBar height="30%" overflow="hidden">
-        <Box
-          width="100%"
-          height="100%"
-          display="flex"
-          justifyContent="space-between"
-          alignItems="center"
-        >
-          <Avatar />
+  const filtered = React.useMemo(() => {
+    let list = chats;
+    if (tab === "unread") list = list.filter((c) => (c.unreadCount || 0) > 0);
+    if (tab === "groups") list = list.filter((c) => c.isGroup);
+    const term = query.trim().toLowerCase();
+    if (term) {
+      list = list.filter((c) => {
+        const name = chatDisplayName(c, meId).toLowerCase();
+        return name.includes(term) || (c.lastMessage?.content || "").toLowerCase().includes(term);
+      });
+    }
+    return [...list].sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }, [chats, tab, query, meId]);
 
-          <Box display="flex">
-            <IconButton
-              onClick={() => {}}
-              sx={{
-                paddingRight: "15px",
-              }}
-            >
-              <DonutLargeIcon
-                sx={{
-                  color: "#afbac0",
-                }}
-              />
-            </IconButton>
-            <IconButton
-              onClick={() => {}}
-              sx={{
-                paddingRight: "10px",
-              }}
-            >
-              <ChatIcon
-                sx={{
-                  color: "#afbac0",
-                }}
-              />
-            </IconButton>
-            <CustomMenuButton menuItems={leftPanelMenuItem} onSelect={handleMenuSelect} />
-            {/* DB status indicator */}
-            <DBStatus />
+  const totalUnread = chats.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
+
+  return (
+    <Box height="100%" width="100%" display="flex" flexDirection="column" sx={{ bgcolor: "background.paper", minHeight: 0 }}>
+      <Box sx={{ px: 2, pt: 2, pb: 1 }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 750 }}>
+              Chats
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {totalUnread > 0 ? `${totalUnread} unread message${totalUnread > 1 ? "s" : ""}` : "You are all caught up"}
+            </Typography>
           </Box>
-        </Box>
-      </CustomAppBar>
-      <Box
-        sx={{
-          background: "#101b20",
-          padding: "12px",
-        }}
-        display="flex"
-      >
-        <Box
-          display="flex"
-          sx={{
-            background: "#1f2c33",
-            borderRadius: "8px",
-            padding: "0px 8px",
+          <Stack direction="row" spacing={0.5}>
+            <Tooltip title="New group">
+              <IconButton onClick={() => setGroupOpen(true)} aria-label="Create a group">
+                <GroupAddOutlinedIcon />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Friends">
+              <IconButton onClick={() => navigate("/friends")} aria-label="Open friends">
+                <PersonAddAltIcon />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </Stack>
+
+        <TextField
+          placeholder="Search chats or people"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          fullWidth
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" />
+              </InputAdornment>
+            ),
           }}
-          flex={1}
-          alignItems="center"
-        >
-          <IconButton onClick={() => {}}>
-            <SearchIcon
-              sx={{
-                color: "#8696a1",
-                height: "20px",
-                width: "20px",
-              }}
-            />
-          </IconButton>
-          <Input
-            fullWidth
-            disableUnderline
-            placeholder="Search or start a new chat"
-            sx={{
-              height: "35px",
-              color: "white",
-              padding: "0px 13px",
-              fontSize: "14px",
-            }}
-            value={query}
-            onChange={(e) => setQuery((e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && suggestions[0]) startOrOpenChat(suggestions[0]);
-            }}
-          />
-        </Box>
-        <IconButton onClick={() => {}}>
-          <FilterListIcon
-            sx={{
-              color: "#8696a1",
-              height: "20px",
-              width: "20px",
-            }}
-          />
-        </IconButton>
+        />
       </Box>
-      <Box sx={{ background: "#101b20", px: "12px", pb: "8px" }} display="flex" gap={1}>
-        <Chip label="All" size="small" sx={{ bgcolor: "#25d366", color: "#1f2c33", fontWeight: 600 }} />
-        <Chip label="Unread" size="small" sx={{ bgcolor: "transparent", color: "#e9edef", border: "1px solid #2a3942" }} />
-        <Chip label="Favorites" size="small" sx={{ bgcolor: "transparent", color: "#e9edef", border: "1px solid #2a3942" }} />
-        <Chip label="Groups" size="small" sx={{ bgcolor: "transparent", color: "#e9edef", border: "1px solid #2a3942" }} />
-      </Box>
-      <Box
-        overflow="auto"
-        flex={1}
-        sx={{
-          background: "#101b20",
-          pt: 0,
-        }}
-      >
-        {query && (
-          <Box sx={{ px: "12px", pt: "8px" }}>
-            {suggestionsLoading && (
-              <Box sx={{ color: '#8696a1', fontSize: '0.9rem', py: 1 }}>Searching…</Box>
+
+      <Stack direction="row" spacing={1} sx={{ px: 2, pb: 1.5 }}>
+        {(["all", "unread", "groups"] as Tab[]).map((value) => (
+          <Chip
+            key={value}
+            label={value === "all" ? "All" : value === "unread" ? "Unread" : "Groups"}
+            onClick={() => setTab(value)}
+            color={tab === value ? "primary" : "default"}
+            variant={tab === value ? "filled" : "outlined"}
+            size="small"
+          />
+        ))}
+      </Stack>
+
+      <Divider />
+
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        {query.trim().length >= 2 && (
+          <Box sx={{ px: 1, py: 1 }}>
+            <Typography variant="overline" sx={{ px: 1, color: "text.secondary" }}>
+              People
+            </Typography>
+            {searching && <Skeleton height={56} sx={{ borderRadius: 2, mx: 1 }} />}
+            {!searching && results.length === 0 && (
+              <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 1.5 }}>
+                No people match “{query.trim()}”.
+              </Typography>
             )}
-            {!suggestionsLoading && suggestions.length === 0 && (
-              <Box sx={{ color: '#8696a1', fontSize: '0.9rem', py: 1 }}>No results</Box>
-            )}
-            {suggestions.map((u: any) => (
-              <Box
-                key={u._id}
-                onClick={() => startOrOpenChat(u)}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1,
-                  cursor: 'pointer',
-                  px: 1,
-                  py: 1,
-                  borderRadius: '8px',
-                  '&:hover': { backgroundColor: '#1f2c33' },
-                }}
+            {results.map((person) => (
+              <ListItemButton
+                key={person._id}
+                onClick={() => startChat(person)}
+                sx={{ borderRadius: 2.5, mx: 0.5 }}
               >
-                <Avatar src={u.avatarUrl} sx={{ width: 32, height: 32 }} />
-                <Box sx={{ color: '#e9edef' }}>{u.name || u.email || u.phone}</Box>
-              </Box>
+                <UserAvatar src={person.avatarUrl} name={person.name} size={38} online={person.isOnline || person.online} showPresence />
+                <Box sx={{ ml: 1.5, minWidth: 0 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                    {person.name}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap>
+                    {person.username ? `@${person.username}` : person.bio || "Start a conversation"}
+                  </Typography>
+                </Box>
+              </ListItemButton>
             ))}
+            <Divider sx={{ my: 1 }} />
           </Box>
         )}
-        {chats.map((item: ChatCardType, index: number) => {
-          return <ChatCard key={item.id ?? index} item={item} onClick={() => onSelectChat?.(item)} />;
-        })}
-        <Box pt="50px" />
+
+        {loading && <ChatListSkeleton />}
+
+        {!loading && error && (
+          <Box sx={{ p: 3, textAlign: "center" }}>
+            <Typography color="error" variant="body2" sx={{ mb: 1.5 }}>
+              {error}
+            </Typography>
+            <Button onClick={load} size="small" variant="outlined">
+              Try again
+            </Button>
+          </Box>
+        )}
+
+        {!loading && !error && filtered.length === 0 && (
+          <EmptyState
+            icon={tab === "groups" ? GroupAddOutlinedIcon : CampaignOutlinedIcon}
+            title={tab === "unread" ? "No unread chats" : tab === "groups" ? "No groups yet" : "No chats yet"}
+            description={
+              tab === "groups"
+                ? "Create a group to plan things with several friends at once."
+                : "Find someone in Discover or accept a friend request to start chatting."
+            }
+            actionLabel={tab === "groups" ? "Create a group" : "Discover people"}
+            onAction={() => (tab === "groups" ? setGroupOpen(true) : navigate("/discover"))}
+            compact
+          />
+        )}
+
+        {!loading &&
+          filtered.map((chat) => {
+            const name = chatDisplayName(chat, meId);
+            const partner = chatPartner(chat, meId);
+            const last = chat.lastMessage;
+            const lastSenderName =
+              last && typeof last.sender === "object" ? (last.sender as User).name || "" : "";
+            const preview = last
+              ? `${senderId(last.sender) === meId ? "You: " : chat.isGroup && lastSenderName ? `${lastSenderName}: ` : ""}${messagePreview(
+                  last
+                )}`
+              : "Say hello";
+            const unread = chat.unreadCount || 0;
+            const active = selectedChatId === chat._id;
+
+            return (
+              <ListItemButton
+                key={chat._id}
+                selected={active}
+                onClick={() => onSelectChat?.(chat)}
+                sx={{
+                  py: 1.25,
+                  px: 2,
+                  borderRadius: 0,
+                  alignItems: "flex-start",
+                  borderBottom: "1px solid",
+                  borderColor: "divider",
+                  "&.Mui-selected": { bgcolor: "action.selected" },
+                }}
+              >
+                <UserAvatar
+                  src={chat.isGroup ? chat.avatarUrl : (partner as { avatarUrl?: string })?.avatarUrl}
+                  name={name}
+                  size={46}
+                  online={!chat.isGroup && (partner as { online?: boolean })?.online}
+                  showPresence={!chat.isGroup}
+                />
+                <Box sx={{ ml: 1.5, flex: 1, minWidth: 0 }}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+                    <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
+                      {chat.pinned && <PushPinIcon sx={{ fontSize: 14, color: "text.secondary" }} />}
+                      <Typography variant="body2" sx={{ fontWeight: unread ? 750 : 600 }} noWrap>
+                        {name}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="caption" color={unread ? "primary.main" : "text.secondary"} sx={{ flexShrink: 0 }}>
+                      {formatListTime(last?.createdAt || chat.updatedAt)}
+                    </Typography>
+                  </Stack>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mt: 0.25 }}>
+                    <Typography
+                      variant="caption"
+                      color={unread ? "text.primary" : "text.secondary"}
+                      noWrap
+                      sx={{ fontWeight: unread ? 600 : 400 }}
+                    >
+                      {preview}
+                    </Typography>
+                    {unread > 0 && (
+                      <Box
+                        sx={{
+                          minWidth: 20,
+                          height: 20,
+                          px: 0.75,
+                          borderRadius: 10,
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          display: "grid",
+                          placeItems: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {unread > 99 ? "99+" : unread}
+                      </Box>
+                    )}
+                  </Stack>
+                  {!chat.isGroup && partner && (
+                    <Typography variant="caption" sx={{ color: "text.disabled", fontSize: 10.5 }}>
+                      {presenceLabel(partner.online, (partner as User).lastActiveAt)}
+                    </Typography>
+                  )}
+                </Box>
+              </ListItemButton>
+            );
+          })}
       </Box>
+
+      <GroupDialog
+        open={groupOpen}
+        onClose={() => setGroupOpen(false)}
+        onCreated={(chat) => {
+          setChats((prev) => [chat, ...prev]);
+          onSelectChat?.(chat);
+          setGroupOpen(false);
+        }}
+      />
     </Box>
   );
 }
+
