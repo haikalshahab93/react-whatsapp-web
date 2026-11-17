@@ -176,8 +176,9 @@ const groupMessages = [
 
   if (!(await acceptExisting())) {
     const request = await call("POST", "/friends/request", { toUserId: users.bagas.id }, users.ayu.token);
-    if (request.status === 201) {
-      await call("POST", `/friends/request/${request.data._id}/accept`, null, users.bagas.token);
+    const requestId = request.data?.request?._id;
+    if (request.status === 201 && requestId) {
+      await call("POST", `/friends/request/${requestId}/accept`, null, users.bagas.token);
     } else {
       await acceptExisting();
     }
