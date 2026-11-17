@@ -99,7 +99,7 @@ is checked against membership.
 
 | Server → client | Purpose |
 | --- | --- |
-| `message:new`, `message:ack`, `chat:read` | Message delivery, send acknowledgement, read state |
+| `message:created`, `message:ack`, `chat:read` | Message delivery, send acknowledgement, read state |
 | `chat:created`, `chat:updated`, `chat:removed` | Chat list changes |
 | `notification:new` | Friend requests, accepts, group invites, reports |
 | `typing`, `presence:changed`, `presence:pong` | Typing and online state |
@@ -144,6 +144,7 @@ The seed script only talks to the API, so it works against any development datab
 | `APP_ORIGIN` | recommended | Origin used in verification / reset / invite links |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` | no | Verification + reset + invite emails |
 | `TWILIO_SID` `TWILIO_AUTH_TOKEN` `TWILIO_WHATSAPP_FROM` | no | WhatsApp OTP and invites |
+| `EXPOSE_DEV_TOKENS` | no | In production only: `true` makes the API return verification/reset tokens when SMTP is not configured. Demo use only — it lets anyone reset any account |
 
 Without SMTP the API returns the verification/reset token directly so the flow still works in
 development; the UI surfaces this instead of pretending an email was sent. Without Twilio the
@@ -160,16 +161,34 @@ cd server && npm start # serves API + SPA on PORT
 ## Testing
 
 ```bash
+cd server && npm test                             # 20 API + Socket.IO tests
 npx tsc --noEmit                                  # type check
-CI=true npx react-scripts test --watchAll=false   # unit tests
+CI=true npx react-scripts test --watchAll=false   # web smoke test
 npm run build                                     # production build
 ```
 
-The repository ships one render smoke test. The API and Socket.IO paths were exercised during
-development with scripted request and socket suites (auth, chats, messages, friendship, discovery,
-notifications, uploads, plus live delivery, presence and typing); those scripts are not committed,
-so the backend currently has no test suite you can run from a clean checkout. Adding one is the
-highest-value next step for this project.
+The backend suite boots a throwaway MongoDB and a real API process, then talks to it over HTTP and
+Socket.IO — no external database, no mocks, no running server required:
+
+| File | Covers |
+| --- | --- |
+| `server/tests/auth.test.mjs` | registration, email verification, sign-in, token protection, duplicate emails, password reset |
+| `server/tests/social.test.mjs` | direct chats, message history, unread counts, author-only edit/delete, membership checks, duplicate friend requests, single-accept friendship, discovery radius and coordinate privacy, blocking |
+| `server/tests/socket.test.mjs` | handshake rejection without a token, live delivery, typing relay, in-app notifications, posting into someone else's chat |
+
+`.github/workflows/ci.yml` runs the type check, the production build and this suite on every push
+and pull request.
+
+## Deployment
+
+`Dockerfile` builds the web app and runs it from the API process; `render.yaml` deploys it on Render
+and `DEPLOY.md` walks through MongoDB Atlas, Railway and Fly.io, the production checklist (SMTP,
+`JWT_SECRET`, uploads, single instance, TURN) and how to verify the live host. Quick version:
+
+```bash
+docker build -t chateasy .
+docker run -p 5000:5000 -e MONGO_URI="…" -e JWT_SECRET="…" chateasy
+```
 
 ## Free-tier compatibility
 

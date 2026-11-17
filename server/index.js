@@ -19,6 +19,9 @@ const { authMiddleware } = require('./middleware/auth');
 const { attachSocket } = require('./socket');
 
 const app = express();
+// Behind a managed proxy (Render, Railway, Fly, Heroku) the client IP arrives in
+// X-Forwarded-For. Without this, rate limiting would key every visitor to the proxy.
+app.set('trust proxy', 1);
 // Media uploads travel as base64 JSON, so the parser limit is above the 12 MB file cap.
 app.use(express.json({ limit: '18mb' }));
 

@@ -106,7 +106,11 @@ function generateOTP() {
 
 /** True when the API can hand the verification token back to the client (no SMTP). */
 function canExposeToken() {
-  return !smtpConfigured();
+  if (smtpConfigured()) return false;
+  // In production, leaking reset tokens in the response would let anyone take over
+  // any account. Exposing them there requires an explicit opt-in (demo deployments).
+  if (process.env.NODE_ENV === 'production') return process.env.EXPOSE_DEV_TOKENS === 'true';
+  return true;
 }
 
 async function uniqueUsername(name) {
