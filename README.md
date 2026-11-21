@@ -53,8 +53,9 @@ message you) plus discovery preferences.
 camera toggle and hang-up.
 
 **Installable app** — branded web app manifest with icons and a service worker, so the app can be
-added to a phone or desktop home screen and still opens its shell when offline. Desktop
-notifications are opt-in from the bell menu and only fire while the tab is in the background.
+added to a phone or desktop home screen and still opens its shell when offline. Notifications are
+opt-in from the bell menu: in-app while the tab is in the background, and through Web Push (when
+VAPID keys are configured) even after the app is closed.
 
 ## Architecture
 
@@ -91,6 +92,7 @@ cannot send headers) and is only served to members of the chat that owns the fil
 | `/discovery` | `GET /`, `/preferences`, `/likes`, `PUT /preferences`, `POST /location`, `/like`, `/skip`, `DELETE /location`, `/swipe/:userId` |
 | `/notifications` | `GET /`, `PUT /read-all`, `PUT /:id/read`, `DELETE /:id` |
 | `/uploads` | `POST /` (multipart, 12 MB limit), `GET /:id` |
+| `/push` | `GET /key`, `POST /subscribe`, `DELETE /subscribe` |
 
 Realtime runs on Socket.IO at the same origin; the handshake carries the JWT and every chat room join
 is checked against membership.
@@ -150,6 +152,7 @@ The seed script only talks to the API, so it works against any development datab
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` | no | Verification + reset + invite emails |
 | `TWILIO_SID` `TWILIO_AUTH_TOKEN` `TWILIO_WHATSAPP_FROM` | no | WhatsApp OTP and invites |
 | `EXPOSE_DEV_TOKENS` | no | In production only: `true` makes the API return verification/reset tokens when SMTP is not configured. Demo use only — it lets anyone reset any account |
+| `VAPID_PUBLIC_KEY` `VAPID_PRIVATE_KEY` `VAPID_SUBJECT` | no | Enables Web Push so messages arrive while the app is closed. Generate with `npx web-push generate-vapid-keys` |
 
 Without SMTP the API returns the verification/reset token directly so the flow still works in
 development; the UI surfaces this instead of pretending an email was sent. Without Twilio the

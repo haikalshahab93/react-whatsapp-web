@@ -2,6 +2,7 @@ const Chat = require('../models/Chat');
 const Message = require('../models/Message');
 const User = require('../models/User');
 const { isOnline } = require('./presence');
+const { sendPushToUser } = require('./push');
 
 const MEMBER_FIELDS = 'name username avatarUrl bio gender birthdate online lastActiveAt statusMessage';
 
@@ -119,6 +120,18 @@ async function createMessage({ io, chat, senderId, content = '', type = 'text', 
       });
     }
     void chatPayload;
+  }
+
+  // Deliver to devices that are not running the app (no-op without VAPID keys).
+  const preview = populated?.content ? String(populated.content).slice(0, 120) : 'Sent an attachment';
+  const senderName = populated?.sender?.name || 'New message';
+  for (const memberId of memberIds.filter((id) => String(id) !== String(senderId))) {
+    void sendPushToUser(memberId, {
+      title: chat.isGroup ? `${senderName} · ${chat.name}` : senderName,
+      body: preview,
+      url: `/chats?chat=${chat._id}`,
+      tag: `chat-${chat._id}`,
+    }).catch(() => {});
   }
 
   return populated;

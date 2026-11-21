@@ -119,6 +119,22 @@ const MediaSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/* ---------------------------- Push subscriptions ---------------------------- */
+const PushSubscriptionSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    endpoint: { type: String, required: true },
+    keys: {
+      p256dh: { type: String },
+      auth: { type: String },
+    },
+    userAgent: { type: String },
+  },
+  { timestamps: true }
+);
+PushSubscriptionSchema.index({ endpoint: 1 }, { unique: true });
+PushSubscriptionSchema.index({ user: 1 });
+
 module.exports = {
   FriendRequest: mongoose.model('FriendRequest', FriendRequestSchema),
   Friendship: mongoose.model('Friendship', FriendshipSchema),
@@ -128,5 +144,6 @@ module.exports = {
   Report: mongoose.model('Report', ReportSchema),
   Notification: mongoose.model('Notification', NotificationSchema),
   Media: mongoose.model('Media', MediaSchema),
+  PushSubscription: mongoose.model('PushSubscription', PushSubscriptionSchema),
   pairKeyFor,
 };

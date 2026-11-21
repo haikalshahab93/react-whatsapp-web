@@ -15,6 +15,7 @@ const friendsRouter = require('./routes/friends');
 const discoveryRouter = require('./routes/discovery');
 const notificationsRouter = require('./routes/notifications');
 const uploadsRouter = require('./routes/uploads');
+const pushRouter = require('./routes/push');
 const { authMiddleware } = require('./middleware/auth');
 const { attachSocket } = require('./socket');
 
@@ -90,7 +91,7 @@ mongoose.connection.once('open', async () => {
       User.syncIndexes(),
       Chat.syncIndexes(),
       Message.syncIndexes(),
-      ...['FriendRequest', 'Friendship', 'Like', 'Match', 'Block', 'Report', 'Notification', 'Media'].map((name) =>
+      ...['FriendRequest', 'Friendship', 'Like', 'Match', 'Block', 'Report', 'Notification', 'Media', 'PushSubscription'].map((name) =>
         Social[name].syncIndexes()
       ),
     ]);
@@ -110,6 +111,7 @@ app.use('/api/messages', authMiddleware, messagesRouter);
 app.use('/api/friends', authMiddleware, friendsRouter);
 app.use('/api/discovery', authMiddleware, discoveryRouter);
 app.use('/api/notifications', authMiddleware, notificationsRouter);
+app.use('/api/push', authMiddleware, pushRouter);
 app.use('/api/uploads', authMiddleware, uploadsRouter);
 // Media files are served through an authenticated handler (chat membership is enforced there).
 app.use('/api/media', uploadsRouter);

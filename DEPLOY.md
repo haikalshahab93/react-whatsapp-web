@@ -63,6 +63,26 @@ curl -s https://YOUR-HOST/api/health      # {"status":"ok","db":"connected",…}
 Then in the browser: register an account, verify it, sign in, open a second browser profile, and
 check that a message arrives without refreshing (that proves the WebSocket upgrade works on the host).
 
+## Push notifications while the app is closed (optional)
+
+Without keys nothing breaks: the bell menu still shows in-app notifications, and the service worker
+skips push entirely. To deliver messages to a closed app, generate a VAPID pair and set it on the
+host:
+
+```bash
+npx web-push generate-vapid-keys     # prints a public and a private key
+```
+
+| Variable | Value |
+| --- | --- |
+| `VAPID_PUBLIC_KEY` | the generated public key |
+| `VAPID_PRIVATE_KEY` | the generated private key — treat it as a secret |
+| `VAPID_SUBJECT` | a contact URI, e.g. `mailto:you@example.com` |
+
+Push requires HTTPS (the deployed origin qualifies; `localhost` is also treated as secure). Each
+browser that enables notifications registers one subscription, and expired endpoints are removed
+automatically when the push service reports them gone.
+
 ## Production checklist
 
 - **`JWT_SECRET` must be set and stable.** Rotating it signs everybody out.

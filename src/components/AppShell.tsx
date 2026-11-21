@@ -33,6 +33,7 @@ import { useColorMode } from "../context/ColorModeContext";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 import { getSocket } from "../lib/socket";
+import { enablePushNotifications } from "../lib/push";
 import { formatRelative } from "../lib/format";
 import type { NotificationItem } from "../lib/types";
 import UserAvatar from "./Avatar";
@@ -90,9 +91,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const requestNotifications = React.useCallback(async () => {
     if (!supportsNotifications) return;
     try {
-      setNotificationPermission(await Notification.requestPermission());
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      // Permission granted also means this device can receive messages while the app is closed.
+      if (permission === "granted") void enablePushNotifications();
     } catch {
       /* the user dismissed the prompt */
+    }
+  }, [supportsNotifications]);
+
+  // Keep the push subscription fresh for returning visitors who already allowed notifications.
+  React.useEffect(() => {
+    if (supportsNotifications && Notification.permission === "granted") {
+      void enablePushNotifications();
     }
   }, [supportsNotifications]);
 

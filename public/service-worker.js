@@ -25,6 +25,47 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+self.addEventListener("push", (event) => {
+  let payload = { title: "ChatEasy", body: "", url: "/chats", tag: undefined };
+  try {
+    if (event.data) payload = { ...payload, ...event.data.json() };
+  } catch {
+    /* keep the defaults */
+  }
+
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      // The app is open and visible: its own UI already shows the notification.
+      if (clients.some((client) => client.visibilityState === "visible")) return undefined;
+      return self.registration.showNotification(payload.title, {
+        body: payload.body,
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        tag: payload.tag,
+        data: { url: payload.url || "/chats" },
+      });
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || "/chats";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) {
+          if ("navigate" in client) {
+            client.navigate(target).catch(() => {});
+          }
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(target);
+    })
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
