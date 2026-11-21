@@ -32,7 +32,8 @@ protected routes, sign-out.
 
 **Messaging** — real-time delivery over authenticated Socket.IO, history with cursor pagination,
 delivery/read receipts, typing indicators, presence, replies, editing, soft deletion, forwarding,
-emoji reactions, in-conversation search, image/video/audio/document attachments, voice-note recording.
+emoji reactions, in-conversation search plus a global search across every conversation you can see,
+image/video/audio/document attachments, voice-note recording.
 
 **Groups** — create groups, add/remove members, promote/demote admins, group info, mute/pin, leave.
 
@@ -50,6 +51,10 @@ message you) plus discovery preferences.
 
 **Calls** — WebRTC voice and video calls with incoming-call notifications, accept/decline, mute,
 camera toggle and hang-up.
+
+**Installable app** — branded web app manifest with icons and a service worker, so the app can be
+added to a phone or desktop home screen and still opens its shell when offline. Desktop
+notifications are opt-in from the bell menu and only fire while the tab is in the background.
 
 ## Architecture
 

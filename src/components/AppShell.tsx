@@ -59,6 +59,37 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [anchorEl, setAnchorEl] = React.useState<HTMLElement | null>(null);
   const [menuEl, setMenuEl] = React.useState<HTMLElement | null>(null);
 
+  const meId = String(user?._id || user?.id || "");
+  const supportsNotifications = typeof window !== "undefined" && "Notification" in window;
+  const [notificationPermission, setNotificationPermission] = React.useState<
+    NotificationPermission | "unsupported"
+  >(supportsNotifications ? Notification.permission : "unsupported");
+  const lastNotified = React.useRef<string>("");
+
+  const requestNotifications = React.useCallback(async () => {
+    if (!supportsNotifications) return;
+    try {
+      setNotificationPermission(await Notification.requestPermission());
+    } catch {
+      /* the user dismissed the prompt */
+    }
+  }, [supportsNotifications]);
+
+  // System notification only when the tab is in the background and permission was granted.
+  const showSystemNotification = React.useCallback(
+    (title: string, body: string, tag?: string) => {
+      if (!supportsNotifications || !document.hidden || Notification.permission !== "granted") return;
+      if (tag && lastNotified.current === tag) return;
+      lastNotified.current = tag || "";
+      try {
+        new Notification(title, { body, tag, icon: "/icon-192.png", badge: "/icon-192.png" });
+      } catch {
+        /* some browsers refuse notifications from insecure origins */
+      }
+    },
+    [supportsNotifications]
+  );
+
   const loadNotifications = React.useCallback(async () => {
     try {
       const data = await api<{ items: NotificationItem[]; unreadCount: number }>("/notifications", {
@@ -84,12 +115,36 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       if (item.type === "friend_request" || item.type === "friend_accepted" || item.type === "match") {
         window.dispatchEvent(new CustomEvent(FRIEND_REQUESTS_EVENT));
       }
+      showSystemNotification(item.title, item.body || "Open ChatEasy to see it", item._id);
     };
     socket.on("notification:new", onNotification);
     return () => {
       socket.off("notification:new", onNotification);
     };
-  }, []);
+  }, [showSystemNotification]);
+
+  // Messages arrive as chat updates in the user room, so the bell can surface them
+  // even when the conversation itself is not open.
+  React.useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return undefined;
+    const onChatUpdated = (chat: {
+      _id?: string;
+      name?: string;
+      isGroup?: boolean;
+      lastMessage?: { _id?: string; content?: string; sender?: { _id?: string; name?: string } | string };
+    }) => {
+      const last = chat?.lastMessage;
+      if (!last || typeof last.sender !== "object" || !last.sender) return;
+      if (String(last.sender._id) === meId) return;
+      const title = chat.isGroup ? chat.name || "Group chat" : last.sender.name || "New message";
+      showSystemNotification(title, last.content || "Sent an attachment", last._id);
+    };
+    socket.on("chat:updated", onChatUpdated);
+    return () => {
+      socket.off("chat:updated", onChatUpdated);
+    };
+  }, [meId, showSystemNotification]);
 
   const markAllRead = async () => {
     try {
@@ -261,6 +316,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           unread={unread}
           onMarkAllRead={markAllRead}
           onOpenItem={openNotification}
+          permission={notificationPermission}
+          onEnableDesktopNotifications={requestNotifications}
         />
         <AccountMenu
           anchorEl={menuEl}
@@ -353,6 +410,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         unread={unread}
         onMarkAllRead={markAllRead}
         onOpenItem={openNotification}
+        permission={notificationPermission}
+        onEnableDesktopNotifications={requestNotifications}
       />
       <AccountMenu
         anchorEl={menuEl}
@@ -372,6 +431,8 @@ function NotificationPopover({
   unread,
   onMarkAllRead,
   onOpenItem,
+  permission,
+  onEnableDesktopNotifications,
 }: {
   anchorEl: HTMLElement | null;
   onClose: () => void;
@@ -379,6 +440,8 @@ function NotificationPopover({
   unread: number;
   onMarkAllRead: () => void;
   onOpenItem: (item: NotificationItem) => void;
+  permission: NotificationPermission | "unsupported";
+  onEnableDesktopNotifications: () => void;
 }) {
   return (
     <Popover
@@ -452,6 +515,28 @@ function NotificationPopover({
           </MenuItem>
         ))}
       </List>
+      {permission !== "unsupported" && (
+        <Box sx={{ borderTop: "1px solid", borderColor: "divider", p: 1 }}>
+          {permission === "granted" ? (
+            <Typography variant="caption" sx={{ color: "text.secondary", px: 1 }}>
+              Desktop notifications are on.
+            </Typography>
+          ) : permission === "denied" ? (
+            <Typography variant="caption" sx={{ color: "text.secondary", px: 1 }}>
+              Notifications are blocked in your browser settings.
+            </Typography>
+          ) : (
+            <Button
+              fullWidth
+              size="small"
+              startIcon={<NotificationsNoneIcon fontSize="small" />}
+              onClick={onEnableDesktopNotifications}
+            >
+              Enable desktop notifications
+            </Button>
+          )}
+        </Box>
+      )}
     </Popover>
   );
 }

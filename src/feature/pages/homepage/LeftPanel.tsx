@@ -38,6 +38,13 @@ interface LeftPanelProps {
 
 type Tab = "all" | "unread" | "groups";
 
+type MessageHit = {
+  _id: string;
+  content?: string;
+  createdAt?: string;
+  chat?: { _id: string; name?: string; isGroup?: boolean } | string;
+};
+
 export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelProps) {
   const { user } = useAuth();
   const toast = useToast();
@@ -50,6 +57,7 @@ export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelPro
   const [tab, setTab] = React.useState<Tab>("all");
   const [query, setQuery] = React.useState("");
   const [results, setResults] = React.useState<User[]>([]);
+  const [messageHits, setMessageHits] = React.useState<MessageHit[]>([]);
   const [searching, setSearching] = React.useState(false);
   const [groupOpen, setGroupOpen] = React.useState(false);
 
@@ -128,26 +136,33 @@ export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelPro
     );
   }, [selectedChatId]);
 
-  // Debounced people search
+  // Debounced search across people and every message the user can see.
   React.useEffect(() => {
     const term = query.trim();
     if (term.length < 2) {
       setResults([]);
+      setMessageHits([]);
       setSearching(false);
       return undefined;
     }
     const controller = new AbortController();
     setSearching(true);
     const timer = window.setTimeout(async () => {
-      try {
-        const data = await api<User[]>("/users/suggest", {
-          query: { q: term, limit: 12 },
+      const [people, messages] = await Promise.allSettled([
+        api<User[]>("/users/suggest", { query: { q: term, limit: 8 }, signal: controller.signal }),
+        api<{ messages: MessageHit[] }>("/messages/search", {
+          query: { q: term, limit: 8 },
           signal: controller.signal,
-        });
-        setResults((data || []).filter((u) => String(u._id) !== meId));
-      } catch (e) {
-        if ((e as Error).name !== "AbortError") setResults([]);
-      } finally {
+        }),
+      ]);
+      const aborted = controller.signal.aborted;
+      if (!aborted) {
+        setResults(
+          people.status === "fulfilled"
+            ? (people.value || []).filter((u) => String(u._id) !== meId)
+            : []
+        );
+        setMessageHits(messages.status === "fulfilled" ? messages.value?.messages || [] : []);
         setSearching(false);
       }
     }, 320);
@@ -156,6 +171,26 @@ export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelPro
       window.clearTimeout(timer);
     };
   }, [query, meId]);
+
+  async function openMessageHit(hit: MessageHit) {
+    const chatId = String(hit.chat && typeof hit.chat === "object" ? hit.chat._id : hit.chat || "");
+    if (!chatId) return;
+    setQuery("");
+    setMessageHits([]);
+    setResults([]);
+    const existing = chats.find((c) => String(c._id) === chatId);
+    if (existing) {
+      onSelectChat?.(existing);
+      return;
+    }
+    try {
+      const chat = await api<Chat>(`/chats/${chatId}`);
+      setChats((prev) => [chat, ...prev.filter((c) => c._id !== chat._id)]);
+      onSelectChat?.(chat);
+    } catch (e) {
+      toast.error((e as ApiError).message || "Could not open that conversation.");
+    }
+  }
 
   async function startChat(person: User) {
     try {
@@ -226,7 +261,7 @@ export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelPro
         </Stack>
 
         <TextField
-          placeholder="Search chats or people"
+          placeholder="Search chats, people or messages"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           fullWidth
@@ -258,6 +293,31 @@ export default function LeftPanel({ onSelectChat, selectedChatId }: LeftPanelPro
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {query.trim().length >= 2 && (
           <Box sx={{ px: 1, py: 1 }}>
+            {messageHits.length > 0 && (
+              <>
+                <Typography variant="overline" sx={{ px: 1, color: "text.secondary" }}>
+                  Messages
+                </Typography>
+                {messageHits.map((hit) => (
+                  <ListItemButton
+                    key={hit._id}
+                    onClick={() => openMessageHit(hit)}
+                    sx={{ borderRadius: 2.5, mx: 0.5, display: "block" }}
+                  >
+                    <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
+                      {hit.content || "(attachment)"}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap display="block">
+                      {hit.chat && typeof hit.chat === "object" && hit.chat.name
+                        ? hit.chat.name
+                        : "Conversation"}
+                      {hit.createdAt ? ` · ${new Date(hit.createdAt).toLocaleDateString()}` : ""}
+                    </Typography>
+                  </ListItemButton>
+                ))}
+                <Divider sx={{ my: 1 }} />
+              </>
+            )}
             <Typography variant="overline" sx={{ px: 1, color: "text.secondary" }}>
               People
             </Typography>
