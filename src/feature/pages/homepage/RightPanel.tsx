@@ -77,6 +77,7 @@ export default function RightPanel({ chat, meId, onBack, onChatUpdated }: RightP
   const [deleteTarget, setDeleteTarget] = React.useState<Message | null>(null);
   const [recording, setRecording] = React.useState(false);
   const [recordSeconds, setRecordSeconds] = React.useState(0);
+  const [uploading, setUploading] = React.useState(false);
 
   const inputRef = React.useRef<HTMLTextAreaElement | null>(null);
   const typingTimer = React.useRef<number | null>(null);
@@ -122,8 +123,11 @@ export default function RightPanel({ chat, meId, onBack, onChatUpdated }: RightP
     void loadMessages();
     setReplyTo(null);
     setEditing(null);
-    setText("");
+    // Restore whatever was being typed in this conversation, so switching chats never loses a draft.
+    const saved = chat?._id ? window.localStorage.getItem(`chateasy:draft:${chat._id}`) : null;
+    setText(saved || "");
     setTypingUsers({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadMessages]);
 
   const loadMore = React.useCallback(async () => {
@@ -230,9 +234,49 @@ export default function RightPanel({ chat, meId, onBack, onChatUpdated }: RightP
 
   const handleTextChange = (value: string) => {
     setText(value);
+    if (chat?._id) {
+      if (value) window.localStorage.setItem(`chateasy:draft:${chat._id}`, value);
+      else window.localStorage.removeItem(`chateasy:draft:${chat._id}`);
+    }
     emitTyping(true);
     if (typingTimer.current) window.clearTimeout(typingTimer.current);
     typingTimer.current = window.setTimeout(() => emitTyping(false), 1500);
+  };
+
+  /** Paste an image from the clipboard, or drop a file on the composer. */
+  async function handleFiles(files: FileList | File[] | null) {
+    if (!chat || !files) return;
+    const list = Array.from(files).filter((file) => file.size > 0);
+    if (!list.length) return;
+    const file = list[0];
+    if (file.size > 12 * 1024 * 1024) {
+      toast.error("Files must be 12 MB or smaller");
+      return;
+    }
+    setUploading(true);
+    try {
+      const uploaded = await uploadFile(file, { chatId: chat._id });
+      await sendAttachment(uploaded);
+    } catch (e) {
+      toast.error((e as ApiError).message || "Could not upload that file.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const handlePaste = (event: React.ClipboardEvent) => {
+    const files = event.clipboardData?.files;
+    if (files && files.length > 0) {
+      event.preventDefault();
+      void handleFiles(files);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent) => {
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    event.preventDefault();
+    void handleFiles(files);
   };
 
   async function send() {
@@ -260,6 +304,7 @@ export default function RightPanel({ chat, meId, onBack, onChatUpdated }: RightP
         setReplyTo(null);
       }
       setText("");
+      if (chat?._id) window.localStorage.removeItem(`chateasy:draft:${chat._id}`);
     } catch (e) {
       toast.error((e as ApiError).message || "Message could not be sent.");
     } finally {
@@ -601,7 +646,14 @@ export default function RightPanel({ chat, meId, onBack, onChatUpdated }: RightP
             </Tooltip>
           </Stack>
         ) : (
-          <Stack direction="row" alignItems="flex-end" spacing={0.5}>
+          <Stack
+            direction="row"
+            alignItems="flex-end"
+            spacing={0.5}
+            onPaste={handlePaste}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleDrop}
+          >
             <Tooltip title="Emoji">
               <IconButton onClick={() => setEmojiOpen((v) => !v)} aria-label="Insert emoji">
                 <MoodIcon />
@@ -636,7 +688,7 @@ export default function RightPanel({ chat, meId, onBack, onChatUpdated }: RightP
                 minHeight: 42,
               }}
               endAdornment={
-                sending ? (
+                sending || uploading ? (
                   <InputAdornment position="end">
                     <CircularProgress size={14} sx={{ mr: 1 }} />
                   </InputAdornment>
