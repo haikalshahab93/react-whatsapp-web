@@ -166,7 +166,7 @@ cd server && npm start # serves API + SPA on PORT
 ## Testing
 
 ```bash
-cd server && npm test                             # 20 API + Socket.IO tests
+cd server && npm test                             # 21 API + Socket.IO tests
 npx tsc --noEmit                                  # type check
 CI=true npx react-scripts test --watchAll=false   # web smoke test
 npm run build                                     # production build
@@ -178,7 +178,7 @@ Socket.IO — no external database, no mocks, no running server required:
 | File | Covers |
 | --- | --- |
 | `server/tests/auth.test.mjs` | registration, email verification, sign-in, token protection, duplicate emails, password reset |
-| `server/tests/social.test.mjs` | direct chats, message history, unread counts, author-only edit/delete, membership checks, duplicate friend requests, single-accept friendship, discovery radius and coordinate privacy, blocking |
+| `server/tests/social.test.mjs` | direct chats, message history, unread counts, cross-conversation message search (and that it never leaks other chats), author-only edit/delete, membership checks, duplicate friend requests, single-accept friendship, discovery radius and coordinate privacy, blocking |
 | `server/tests/socket.test.mjs` | handshake rejection without a token, live delivery, typing relay, in-app notifications, posting into someone else's chat |
 
 `.github/workflows/ci.yml` runs the type check, the production build and this suite on every push

@@ -99,6 +99,33 @@ test('non-members cannot read or post into a conversation', async () => {
   assert.equal(post.status, 403);
 });
 
+test('message search only returns conversations the caller belongs to', async () => {
+  const phrase = 'Searchable phrase for the suite';
+  const sent = await h.api('POST', '/api/messages', {
+    token: state.ayu.token,
+    body: { chat: state.chatId, content: phrase },
+  });
+  assert.equal(sent.status, 201);
+
+  const mine = await h.api('GET', `/api/messages/search?q=${encodeURIComponent('Searchable phrase')}`, {
+    token: state.bagas.token,
+  });
+  assert.equal(mine.status, 200);
+  assert.ok(
+    mine.data.messages.some((m) => m.content === phrase),
+    'a member finds the message across their conversations'
+  );
+
+  const outsider = await h.api('GET', `/api/messages/search?q=${encodeURIComponent('Searchable phrase')}`, {
+    token: state.citra.token,
+  });
+  assert.equal(outsider.status, 200);
+  assert.ok(
+    !outsider.data.messages.some((m) => m.content === phrase),
+    'someone outside the conversation must not find it'
+  );
+});
+
 test('only the author can edit or delete a message', async () => {
   const foreignEdit = await h.api('PUT', `/api/messages/${state.messageId}`, {
     token: state.bagas.token,
