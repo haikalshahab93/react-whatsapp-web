@@ -65,6 +65,27 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     NotificationPermission | "unsupported"
   >(supportsNotifications ? Notification.permission : "unsupported");
   const lastNotified = React.useRef<string>("");
+  const [offline, setOffline] = React.useState(
+    typeof navigator !== "undefined" ? !navigator.onLine : false
+  );
+
+  // One banner for both the browser going offline and the socket dropping, so the app
+  // never looks frozen without saying why.
+  React.useEffect(() => {
+    const socket = getSocket();
+    const markOffline = () => setOffline(true);
+    const markOnline = () => setOffline(false);
+    socket?.on("disconnect", markOffline);
+    socket?.on("connect", markOnline);
+    window.addEventListener("offline", markOffline);
+    window.addEventListener("online", markOnline);
+    return () => {
+      socket?.off("disconnect", markOffline);
+      socket?.off("connect", markOnline);
+      window.removeEventListener("offline", markOffline);
+      window.removeEventListener("online", markOnline);
+    };
+  }, []);
 
   const requestNotifications = React.useCallback(async () => {
     if (!supportsNotifications) return;
@@ -332,6 +353,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <Box sx={{ display: "flex", height: "100dvh", overflow: "hidden", bgcolor: "background.default" }}>
+      {offline && (
+        <Box
+          role="status"
+          sx={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: (t) => t.zIndex.snackbar,
+            bgcolor: "warning.main",
+            color: "warning.contrastText",
+            textAlign: "center",
+            py: 0.5,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          Reconnecting… messages may be delayed
+        </Box>
+      )}
       <Box
         component="aside"
         sx={{
