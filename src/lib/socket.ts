@@ -1,10 +1,26 @@
 import { io, Socket } from "socket.io-client";
 import { getToken } from "./api";
 
-/** Same-origin by default: the dev proxy and the production build both forward /socket.io. */
+/**
+ * Same-origin by default: the dev proxy and the single-origin production build both
+ * forward /socket.io. When the front end is hosted separately, REACT_APP_WS_BASE points
+ * at the API host, and an absolute REACT_APP_API_BASE is used as a fallback so only one
+ * variable has to be set.
+ */
 function socketOrigin(): string {
-  const configured = typeof process !== "undefined" && process.env && process.env.REACT_APP_WS_BASE;
-  if (configured) return configured;
+  const env = ((typeof process !== "undefined" && process.env) || {}) as Record<
+    string,
+    string | undefined
+  >;
+  if (env.REACT_APP_WS_BASE) return env.REACT_APP_WS_BASE;
+  const apiBase = env.REACT_APP_API_BASE;
+  if (apiBase && /^https?:\/\//i.test(apiBase)) {
+    try {
+      return new URL(apiBase).origin;
+    } catch {
+      /* fall through to same-origin */
+    }
+  }
   if (typeof window !== "undefined" && window.location) return window.location.origin;
   return "http://localhost:5000";
 }

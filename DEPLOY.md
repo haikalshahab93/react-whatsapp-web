@@ -1,8 +1,10 @@
 # Deploying ChatEasy
 
-The app ships as **one Node process**: Express serves the REST API, Socket.IO handles realtime, and
-the compiled React app is served from the same origin (so no CORS or second host is needed). The only
-external service is MongoDB.
+The app ships as **one Node process** by default: Express serves the REST API, Socket.IO handles
+realtime, and the compiled React app is served from the same origin (so no CORS or second host is
+needed). The only external service is MongoDB — the data layer is Mongoose, so Firestore, DynamoDB or
+SQL would mean rewriting every model and query, not a configuration change. A separate front end/API
+hosting is supported too; see “Split deployment” below.
 
 ```
 Browser ──HTTPS/WSS──> Node container (Express + Socket.IO + build/) ──> MongoDB Atlas
@@ -82,6 +84,42 @@ npx web-push generate-vapid-keys     # prints a public and a private key
 Push requires HTTPS (the deployed origin qualifies; `localhost` is also treated as secure). Each
 browser that enables notifications registers one subscription, and expired endpoints are removed
 automatically when the push service reports them gone.
+
+## Split deployment: web app and API on separate hosts (Render)
+
+Use this when the front end and the API should live on different URLs. `render.split.yaml` defines
+two services:
+
+| Service | Type | What it runs |
+| --- | --- | --- |
+| `chateasy-api` | Docker web service (`Dockerfile.api`) | Express + Socket.IO, no React build |
+| `chateasy-web` | Static site | `npm run build` output in `./build` |
+
+1. Render dashboard → **New + → Blueprint** → pick the repo → set the blueprint path to
+   `render.split.yaml`.
+2. Deploy the API first and copy its URL (e.g. `https://chateasy-api.onrender.com`).
+3. Deploy the web service with these build-time variables:
+
+| Variable | Value |
+| --- | --- |
+| `REACT_APP_API_BASE` | `https://chateasy-api.onrender.com/api` |
+| `REACT_APP_WS_BASE` | optional, only when the WebSocket host differs from the API host |
+
+4. Back on the API service, set `APP_ORIGIN` to the API URL and `CORS_ORIGINS` to the web URL
+   (comma-separated for several). Without `CORS_ORIGINS` the API answers `Access-Control-Allow-Origin: *`.
+5. Open the web URL and sign in. If the chat list stays empty while the API health check is green,
+   check the browser console for a CORS error and confirm `CORS_ORIGINS` matches the exact origin
+   (scheme + host, no trailing slash).
+
+Notes specific to the split setup:
+
+- `REACT_APP_*` variables are compiled into the bundle, so changing them requires a rebuild, not a
+  restart.
+- Uploads are written to the API container's local disk; a static site has no filesystem. Attach a
+  disk to the API service or move uploads to object storage before relying on them.
+- Keep the API at one instance: presence, rate limiting and Socket.IO rooms live in memory.
+- The service worker and push subscriptions belong to the web origin, which is also the origin that
+  must be HTTPS for Web Push to work.
 
 ## Production checklist
 

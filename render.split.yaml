@@ -1,0 +1,66 @@
+# Render blueprint for a SPLIT deployment: the React app is a static site and the API
+# (REST + Socket.IO) runs as its own container. Use ./render.yaml instead when you want a
+# single service that serves both.
+#
+# Apply from the Render dashboard: New + -> Blueprint -> pick this repo, then set the
+# blueprint path to render.split.yaml. MongoDB is not included: create a free Atlas M0
+# cluster and paste its connection string into MONGO_URI (see DEPLOY.md).
+services:
+  # ------------------------------------------------------------------ back end ---
+  - type: web
+    name: chateasy-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      # Public URL of this API service, e.g. https://chateasy-api.onrender.com
+      - key: APP_ORIGIN
+        sync: false
+      # Public URL of the static site, e.g. https://chateasy-web.onrender.com
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
+
+  # ------------------------------------------------------------------ front end ---
+  - type: web
+    name: chateasy-web
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./build
+    autoDeploy: true
+    routes:
+      # Single-page app: every unknown path is handled by React Router.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      # Baked in at build time. Point these at the API service above.
+      - key: REACT_APP_API_BASE
+        sync: false
+      # Optional: only needed when the WebSocket host differs from the API host.
+      - key: REACT_APP_WS_BASE
+        sync: false

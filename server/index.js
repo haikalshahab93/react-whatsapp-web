@@ -46,9 +46,21 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// Basic CORS (no extra dependency)
+// Basic CORS (no extra dependency). Same-origin and single-origin deploys need nothing;
+// a split front end/API deployment lists its web origins in CORS_ORIGINS.
+const corsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = req.get('origin');
+  if (!corsOrigins.length) {
+    res.header('Access-Control-Allow-Origin', '*');
+  } else {
+    res.header('Access-Control-Allow-Origin', corsOrigins.includes(origin) ? origin : corsOrigins[0]);
+    res.header('Vary', 'Origin');
+  }
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
@@ -128,7 +140,7 @@ if (fs.existsSync(path.join(buildDir, 'index.html'))) {
 // Socket.IO setup
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
+  cors: { origin: corsOrigins.length ? corsOrigins : '*', methods: ['GET', 'POST'] },
 });
 app.set('io', io);
 attachSocket(io);

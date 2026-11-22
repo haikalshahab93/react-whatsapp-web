@@ -153,6 +153,7 @@ The seed script only talks to the API, so it works against any development datab
 | `TWILIO_SID` `TWILIO_AUTH_TOKEN` `TWILIO_WHATSAPP_FROM` | no | WhatsApp OTP and invites |
 | `EXPOSE_DEV_TOKENS` | no | In production only: `true` makes the API return verification/reset tokens when SMTP is not configured. Demo use only — it lets anyone reset any account |
 | `VAPID_PUBLIC_KEY` `VAPID_PRIVATE_KEY` `VAPID_SUBJECT` | no | Enables Web Push so messages arrive while the app is closed. Generate with `npx web-push generate-vapid-keys` |
+| `CORS_ORIGINS` | no | Comma-separated web origins allowed to call the API when the front end is hosted separately. Defaults to `*` |
 
 Without SMTP the API returns the verification/reset token directly so the flow still works in
 development; the UI surfaces this instead of pretending an email was sent. Without Twilio the
